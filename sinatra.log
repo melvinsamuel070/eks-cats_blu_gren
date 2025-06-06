@@ -1,0 +1,18 @@
+[pod/sinatra-v1-67889b968b-9sbj6/sinatra] Calling `DidYouMean::SPELL_CHECKERS.merge!(error_name => spell_checker)' has been deprecated. Please call `DidYouMean.correct_error(error_name, spell_checker)' instead.
+[pod/sinatra-v1-67889b968b-9sbj6/sinatra] [1] Puma starting in cluster mode...
+[pod/sinatra-v1-67889b968b-9sbj6/sinatra] [1] * Puma version: 5.6.4 (ruby 3.2.8-p263) ("Birdie's Version")
+[pod/sinatra-v1-67889b968b-9sbj6/sinatra] [1] *  Min threads: 4
+[pod/sinatra-v1-67889b968b-9sbj6/sinatra] [1] *  Max threads: 4
+[pod/sinatra-v1-67889b968b-9sbj6/sinatra] [1] *  Environment: production
+[pod/sinatra-v1-67889b968b-9sbj6/sinatra] [1] *   Master PID: 1
+[pod/sinatra-v1-67889b968b-9sbj6/sinatra] [1] *      Workers: 2
+[pod/sinatra-v1-67889b968b-9sbj6/sinatra] [1] *     Restarts: (✔) hot (✖) phased
+[pod/sinatra-v1-67889b968b-9sbj6/sinatra] [1] * Preloading application
+[pod/sinatra-v1-67889b968b-9sbj6/sinatra] [1] * Listening on ://0.0.0http.0:8000
+[pod/sinatra-v1-67889b968b-9sbj6/sinatra] [1] Use Ctrl-C to stop
+[pod/sinatra-v1-67889b968b-9sbj6/sinatra] [1] - Worker 0 (PID: 7) booted in 0.09s, phase: 0
+[pod/sinatra-v1-67889b968b-9sbj6/sinatra] [1] - Worker 1 (PID: 8) booted in 0.18s, phase: 0
+[pod/sinatra-v1-67889b968b-9sbj6/sinatra] [1] ! Terminating timed out worker (worker failed to check in within 60 seconds): 8
+[pod/sinatra-v1-67889b968b-9sbj6/sinatra] [1] - Worker 1 (PID: 30) booted in 0.09s, phase: 0
+[pod/sinatra-v1-67889b968b-9sbj6/sinatra] [1] ! Terminating timed out worker (worker failed to check in within 60 seconds): 30
+[pod/sinatra-v1-67889b968b-9sbj6/sinatra] [1] - Worker 1 (PID: 41) booted in 0.67s, phase: 0

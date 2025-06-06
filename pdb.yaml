@@ -1,0 +1,10 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: sinatra-pdb
+  namespace: prometheus
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: sinatra

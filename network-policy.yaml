@@ -1,0 +1,19 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sinatra-netpol
+  namespace: monitoring
+spec:
+  podSelector:
+    matchLabels:
+      app: sinatra
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: sinatra
+      ports:
+        - protocol: TCP
+          port: 8000
