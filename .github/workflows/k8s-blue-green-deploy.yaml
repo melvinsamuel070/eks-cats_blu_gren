@@ -236,11 +236,9 @@ jobs:
           docker push ${{ secrets.DOCKER_USERNAME }}/sanity:${VERSION}
 
 
-
       - name: Ensure prometheus namespace exists
         run: |
-         kubectl get namespace prometheus || kubectl create namespace prometheus
-
+          kubectl get namespace prometheus || kubectl create namespace prometheus
 
       - name: Determine active and idle colors
         id: color_switch
@@ -256,9 +254,6 @@ jobs:
             echo "ACTIVE_COLOR=green" >> $GITHUB_ENV
             echo "IDLE_COLOR=blue" >> $GITHUB_ENV
           fi
-          echo "Switching deployment to ${IDLE_COLOR}"
-
-
 
       - name: Replace version in deployment manifests for idle (green/blue) deployment
         env:
@@ -269,8 +264,6 @@ jobs:
           sed "s/__VERSION__/${VERSION}/g; s/sinatra-[a-z]*/sinatra-${IDLE_COLOR}/g; s/version: [a-z]*/version: ${IDLE_COLOR}/g" sinatra-blue.yaml > k8s/sinatra-${IDLE_COLOR}-updated.yaml
           cp sinatra-service.yaml k8s/sinatra-service.yaml
 
-
-
       - name: Apply idle deployment manifest
         run: |
           kubectl apply -f k8s/sinatra-${{ env.IDLE_COLOR }}-updated.yaml -n prometheus
@@ -279,9 +272,18 @@ jobs:
         run: |
           kubectl rollout status deployment/sinatra-${{ env.IDLE_COLOR }} -n prometheus --timeout=120s
 
-      - name: Switch service to idle deployment
+      - name: Apply sinatra service manifest (ensure it exists)
         run: |
-          kubectl patch svc sinatra-service -n prometheus -p '{"spec": {"selector": {"app": "sinatra", "version": "'${IDLE_COLOR}'"}}}'
+          kubectl apply -f k8s/sinatra-service.yaml -n prometheus
+
+      - name: Switch service to idle deployment
+        env:
+          IDLE_COLOR: ${{ env.IDLE_COLOR }}
+        run: |
+          kubectl patch svc sinatra-service -n prometheus -p \
+            "{\"spec\": {\"selector\": {\"app\": \"sinatra\", \"version\": \"${IDLE_COLOR}\"}}}"
+
+
 
       - name: Wait a bit to confirm traffic switched
         run: sleep 20
@@ -292,9 +294,7 @@ jobs:
            echo "Running health check against the new deployment..."
 
            # Option 1: If you're testing locally with port-forward
-           #curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health
-
-          
+           #curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health 
            if [[ "$STATUS_CODE" -ne 200 ]]; then
            echo "Health check failed with status $STATUS_CODE"
            exit 1
