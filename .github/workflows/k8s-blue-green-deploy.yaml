@@ -586,13 +586,15 @@ jobs:
          -t ${{ secrets.DOCKER_USERNAME }}/sanity:$VERSION .
          docker push ${{ secrets.DOCKER_USERNAME }}/sanity:$VERSION
 
+         
+
       - name: Verify deployed version
         run: |
          echo "Starting port-forward..."
-         kubectl port-forward svc/sinatra-service 8080:8000 -n prometheus &
+         kubectl port-forward svc/sinatra-service 8080:8000 -n default &  # Changed namespace
          sleep 5
     
-          echo "::group::Version Verification"
+         echo "::group::Version Verification"
          APP_VERSION=$(curl -s http://localhost:8080/version)
          WORKFLOW_VERSION="${{ needs.tag-and-release.outputs.version_tag }}"
     
@@ -608,7 +610,12 @@ jobs:
          echo "::endgroup::"
     
          # Kill the port-forward process
-           pkill -f "kubectl port-forward"
+         pkill -f "kubectl port-forward"
+
+
+
+
+
       - name: Ensure prometheus namespace exists
         run: |
           kubectl create namespace prometheus --dry-run=client -o yaml | kubectl apply -f -
