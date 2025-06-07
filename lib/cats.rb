@@ -16,61 +16,9 @@
 #   end
 # end
 
-#frozen_string_literal: true
-
-require 'sinatra/base'
-require 'net/http'
-
-module Cats
-  class Web < Sinatra::Base
-    configure do
-      set :url, URI('https://thecatapi.com/api/images/get').freeze
-
-      enable :logging
-      use Rack::CommonLogger, $stdout
-    end
-
-    # Health endpoint for Kubernetes
-    get '/health' do
-      status 200
-      'OK'
-    end
-
-    get '/' do
-      image_url = Net::HTTP.get_response(settings.url)['location']
-
-      <<~HTML
-        <!DOCTYPE html>
-        <html>
-          <head>
-            <title>Here's a Cat! 🐱</title>
-            <style>
-              body { text-align: center; font-family: Arial, sans-serif; margin-top: 50px; }
-              img { max-width: 90%; height: auto; border-radius: 12px; box-shadow: 0 0 20px rgba(0,0,0,0.2); }
-            </style>
-          </head>
-          <body>
-            <h1>Here's a Cat! 🐱</h1>
-            <img src="#{image_url}" alt="A random cat image" />
-          </body>
-        </html>
-      HTML
-    end
-
-    # Start the app and bind to 0.0.0.0 so Kubernetes can reach it
-    run! host: '0.0.0.0', port: 8000 if app_file == $0
-  end
-end
 
 
-
-
-
-
-
-
-
-
+# #frozen_string_literal: true
 
 # require 'sinatra/base'
 # require 'net/http'
@@ -84,10 +32,10 @@ end
 #       use Rack::CommonLogger, $stdout
 #     end
 
-#     # Health endpoint for Kubernetes (simulating failure for rollback testing)
+#     # Health endpoint for Kubernetes
 #     get '/health' do
-#       status 500
-#       'NOT OK'
+#       status 200
+#       'OK'
 #     end
 
 #     get '/' do
@@ -115,3 +63,67 @@ end
 #     run! host: '0.0.0.0', port: 8000 if app_file == $0
 #   end
 # end
+
+
+
+
+
+
+
+
+
+
+
+# frozen_string_literal: true
+
+require 'sinatra/base'
+require 'net/http'
+
+module Cats
+  class Web < Sinatra::Base
+    configure do
+      set :url, URI('https://thecatapi.com/api/images/get').freeze
+      set :version, ENV['APP_VERSION'] || '1.0.0' # Add version setting
+
+      enable :logging
+      use Rack::CommonLogger, $stdout
+    end
+
+    # Health endpoint for Kubernetes
+    get '/health' do
+      status 200
+      'OK'
+    end
+
+    # Add version endpoint
+    get '/version' do
+      content_type :text/plain
+      settings.version
+    end
+
+    get '/' do
+      image_url = Net::HTTP.get_response(settings.url)['location']
+
+      <<~HTML
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <title>Here's a Cat! 🐱 (v#{settings.version})</title>
+            <style>
+              body { text-align: center; font-family: Arial, sans-serif; margin-top: 50px; }
+              img { max-width: 90%; height: auto; border-radius: 12px; box-shadow: 0 0 20px rgba(0,0,0,0.2); }
+              .version { color: #666; margin-top: 20px; }
+            </style>
+          </head>
+          <body>
+            <h1>Here's a Cat! 🐱</h1>
+            <img src="#{image_url}" alt="A random cat image" />
+            <div class="version">Version: #{settings.version}</div>
+          </body>
+        </html>
+      HTML
+    end
+
+    run! host: '0.0.0.0', port: 8000 if app_file == $0
+  end
+end

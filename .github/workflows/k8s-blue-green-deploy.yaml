@@ -578,17 +578,37 @@ jobs:
 
       - name: Build and push Docker image
         env:
-          VERSION: ${{ needs.tag-and-release.outputs.version_tag }}
+         VERSION: ${{ needs.tag-and-release.outputs.version_tag }}
         run: |
-          echo "::group::Building Docker Image"
-          docker build --no-cache -t ${{ secrets.DOCKER_USERNAME }}/sanity:$VERSION .
-          echo "::endgroup::"
-          
-          echo "::group::Pushing Docker Image"
-          docker push ${{ secrets.DOCKER_USERNAME }}/sanity:$VERSION
-          echo "Pushed: ${{ secrets.DOCKER_USERNAME }}/sanity:$VERSION"
-          echo "::endgroup::"
+         docker build \
+         --no-cache \
+         --build-arg APP_VERSION=$VERSION \
+         -t ${{ secrets.DOCKER_USERNAME }}/sanity:$VERSION .
+         docker push ${{ secrets.DOCKER_USERNAME }}/sanity:$VERSION
 
+      - name: Verify deployed version
+        run: |
+         echo "Starting port-forward..."
+         kubectl port-forward svc/sinatra-service 8080:8000 -n prometheus &
+         sleep 5
+    
+          echo "::group::Version Verification"
+         APP_VERSION=$(curl -s http://localhost:8080/version)
+         WORKFLOW_VERSION="${{ needs.tag-and-release.outputs.version_tag }}"
+    
+         echo "Application reports version: $APP_VERSION"
+         echo "Workflow version: $WORKFLOW_VERSION"
+    
+         if [ "$APP_VERSION" != "$WORKFLOW_VERSION" ]; then
+         echo "::error::Version mismatch! Application reports $APP_VERSION but workflow expects $WORKFLOW_VERSION"
+         exit 1
+         else
+         echo "Version matches!"
+         fi
+         echo "::endgroup::"
+    
+         # Kill the port-forward process
+           pkill -f "kubectl port-forward"
       - name: Ensure prometheus namespace exists
         run: |
           kubectl create namespace prometheus --dry-run=client -o yaml | kubectl apply -f -
