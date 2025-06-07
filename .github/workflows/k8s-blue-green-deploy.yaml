@@ -1,228 +1,3 @@
-# name: CI/CD Pipeline with Blue-Green Deployment
-
-# on:
-#   push:
-#     branches:
-#       - master
-
-# permissions:
-#   contents: write
-
-# jobs:
-#   test:
-#     runs-on: ubuntu-latest
-#     steps:
-#       - name: Checkout code
-#         uses: actions/checkout@v4
-#       # Add your tests here
-
-#   tag-and-release:
-#     needs: test
-#     runs-on: ubuntu-latest
-#     outputs:
-#       version_tag: ${{ steps.set_tag.outputs.version_tag }}
-#     steps:
-#       - name: Checkout code
-#         uses: actions/checkout@v4
-
-#       - name: Get next version tag (major bump)
-#         id: set_tag
-#         run: |
-#           TAG=$(git tag --sort=-v:refname | head -n1)
-#           echo "Latest tag: $TAG"
-
-#           if [ -z "$TAG" ]; then
-#             NEW_TAG="1.0.0"
-#           else
-#             IFS='.' read -r MAJOR MINOR PATCH <<< "${TAG#v}"
-#             MAJOR=$((MAJOR + 1))
-#             MINOR=0
-#             PATCH=0
-#             NEW_TAG="${MAJOR}.${MINOR}.${PATCH}"
-#           fi
-
-#           echo "version_tag=$NEW_TAG" >> $GITHUB_OUTPUT
-
-#       - name: Create Git tag
-#         env:
-#           GH_PAT: ${{ secrets.GH_PAT }}
-#         run: |
-#           git config user.name "GitHub Actions"
-#           git config user.email "actions@github.com"
-#           git remote set-url origin https://x-access-token:${GH_PAT}@github.com/${{ github.repository }}
-
-#           TAG="v${{ steps.set_tag.outputs.version_tag }}"
-#           if git ls-remote --tags origin | grep -q "refs/tags/${TAG}$"; then
-#             echo "Tag ${TAG} already exists on remote, skipping push."
-#           else
-#             git tag "${TAG}"
-#             git push origin "${TAG}"
-#             echo "Tag ${TAG} created and pushed."
-#           fi
-
-#   minikube:
-#     needs: tag-and-release
-#     runs-on: ubuntu-latest
-#     env:
-#       NAMESPACE: prometheus
-#     steps:
-#       - name: Checkout code
-#         uses: actions/checkout@v4
-
-#       - name: Start Minikube
-#         id: minikube
-#         uses: hiberbee/github-action-minikube@latest
-
-#       - name: Get Minikube IP
-#         run: echo ${{ steps.minikube.outputs.ip }}
-
-#       - name: Log in to Docker Hub
-#         uses: docker/login-action@v3
-#         with:
-#           username: ${{ secrets.DOCKER_USERNAME }}
-#           password: ${{ secrets.DOCKER_PASSWORD }}
-
-#       - name: Build and push Docker image
-#         env:
-#           VERSION: ${{ needs.tag-and-release.outputs.version_tag }}
-#         run: |
-#           docker build -t ${{ secrets.DOCKER_USERNAME }}/sanity:${VERSION} .
-#           docker push ${{ secrets.DOCKER_USERNAME }}/sanity:${VERSION}
-
-#       - name: Ensure prometheus namespace exists
-#         run: |
-#           kubectl get namespace $NAMESPACE || kubectl create namespace $NAMESPACE
-
-#       - name: Determine active and idle colors
-#         id: color_switch
-#         run: |
-#           set -e
-#           CURRENT=$(kubectl get svc sinatra-service -n $NAMESPACE -o jsonpath='{.spec.selector.version}' || echo "")
-#           echo "Current active deployment color: $CURRENT"
-
-#           if [[ "$CURRENT" == "blue" ]]; then
-#             echo "ACTIVE_COLOR=blue" >> $GITHUB_ENV
-#             echo "IDLE_COLOR=green" >> $GITHUB_ENV
-#           else
-#             echo "ACTIVE_COLOR=green" >> $GITHUB_ENV
-#             echo "IDLE_COLOR=blue" >> $GITHUB_ENV
-#           fi
-
-#       - name: Replace version in deployment manifests for idle (green/blue) deployment
-#         env:
-#           VERSION: ${{ needs.tag-and-release.outputs.version_tag }}
-#           IDLE_COLOR: ${{ env.IDLE_COLOR }}
-#         run: |
-#           mkdir -p k8s
-#           sed "s/__VERSION__/${VERSION}/g; s/sinatra-[a-z]*/sinatra-${IDLE_COLOR}/g; s/version: [a-z]*/version: ${IDLE_COLOR}/g" sinatra-blue.yaml > k8s/sinatra-${IDLE_COLOR}-updated.yaml
-#           cp sinatra-service.yaml k8s/sinatra-service.yaml
-
-#       - name: Apply idle deployment manifest
-#         run: |
-#           kubectl apply -f k8s/sinatra-${{ env.IDLE_COLOR }}-updated.yaml -n $NAMESPACE
-
-#       - name: Wait for idle deployment rollout to complete
-#         run: |
-#           kubectl rollout status deployment/sinatra-${{ env.IDLE_COLOR }} -n $NAMESPACE --timeout=120s
-
-#       - name: Apply sinatra service manifest (ensure it exists)
-#         run: |
-#           kubectl apply -f k8s/sinatra-service.yaml -n $NAMESPACE
-
-#       - name: Switch service to idle deployment
-#         env:
-#           IDLE_COLOR: ${{ env.IDLE_COLOR }}
-#         run: |
-#           kubectl patch svc sinatra-service -n $NAMESPACE -p "{\"spec\": {\"selector\": {\"app\": \"sinatra\", \"version\": \"${IDLE_COLOR}\"}}}"
-
-#       - name: Port-forward Sinatra service
-#         run: |
-#           echo "Starting port-forward on sinatra-service..."
-#           kubectl port-forward svc/sinatra-service 8080:80 -n $NAMESPACE &
-#           sleep 5
-
-#       - name: Verify new deployment is healthy
-#         run: |
-#           echo "Running health check against the new deployment..."
-#           STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health)
-#           if [[ "$STATUS_CODE" -ne 200 ]]; then
-#             echo "Health check failed with status $STATUS_CODE"
-#             exit 1
-#           else
-#             echo "Health check passed with status $STATUS_CODE"
-#           fi
-
-#       - name: Delete old active deployment to free resources (optional)
-#         run: |
-#           kubectl delete deployment sinatra-${{ env.ACTIVE_COLOR }} -n $NAMESPACE || echo "No old deployment to delete"
-
-#   rollback:
-#      if: failure()
-#      runs-on: ubuntu-latest
-#      steps:
-#       - name: Checkout code
-#         uses: actions/checkout@v4
-
-#       - name: Determine active and idle colors for rollback
-#         id: rollback_colors
-#         run: |
-#          set -e
-#          CURRENT=$(kubectl get svc sinatra-service -n prometheus -o jsonpath='{.spec.selector.version}' || echo "")
-#          if [[ "$CURRENT" == "blue" ]]; then
-#           echo "ACTIVE_COLOR=blue" >> $GITHUB_ENV
-#           echo "IDLE_COLOR=green" >> $GITHUB_ENV
-#          else
-#           echo "ACTIVE_COLOR=green" >> $GITHUB_ENV
-#           echo "IDLE_COLOR=blue" >> $GITHUB_ENV
-#          fi
-
-#       - name: Debug pods and deployments before rollback
-#         run: |
-#          kubectl get pods -n prometheus -o wide
-#          kubectl get deployments -n prometheus
-
-#       - name: Rollback service to previously active deployment
-#         run: |
-#          kubectl patch svc sinatra-service -n prometheus -p "{\"spec\": {\"selector\": {\"app\": \"sinatra\", \"version\": \"${ACTIVE_COLOR}\"}}}"
-
-#       - name: Wait for old deployment rollout to complete
-#         run: |
-#          kubectl rollout status deployment/sinatra-${ACTIVE_COLOR} -n prometheus --timeout=300s
-
-#       - name: Delete failed deployment (idle)
-#         run: |
-#          kubectl delete deployment sinatra-${IDLE_COLOR} -n prometheus || echo "No deployment to delete"
-
-#       - name: Debug pods and deployments after rollback
-#         run: |
-#          kubectl get pods -n prometheus -o wide
-#          kubectl get deployments -n prometheus
-
-#       - name: Verify rollback is healthy
-#         run: |
-#          STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health)
-#          if [[ "$STATUS_CODE" -ne 200 ]]; then
-#           echo "Health check failed with status $STATUS_CODE"
-#           exit 1
-#          fi
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 name: CI/CD Pipeline with Blue-Green Deployment
 
 on:
@@ -311,7 +86,6 @@ jobs:
           docker build -t ${{ secrets.DOCKER_USERNAME }}/sanity:${VERSION} .
           docker push ${{ secrets.DOCKER_USERNAME }}/sanity:${VERSION}
 
-
       - name: Ensure prometheus namespace exists
         run: |
           kubectl get namespace prometheus || kubectl create namespace prometheus
@@ -345,9 +119,37 @@ jobs:
           kubectl apply -f k8s/sinatra-${{ env.IDLE_COLOR }}-updated.yaml -n prometheus
           kubectl describe deployment sinatra-${{ env.IDLE_COLOR }} -n prometheus
 
-      - name: Wait for idle deployment rollout to complete
+      - name: Verify deployment status before switch
         run: |
+          echo "=== Current Cluster State ==="
+          kubectl get deployments -n prometheus
+          kubectl get pods -n prometheus -o wide
+          kubectl get svc sinatra-service -n prometheus -o wide
+          
+          echo "=== New Deployment Status ==="
           kubectl rollout status deployment/sinatra-${{ env.IDLE_COLOR }} -n prometheus --timeout=120s
+          
+          echo "=== Pod Readiness ==="
+          kubectl wait --for=condition=ready pod -l app=sinatra,version=${{ env.IDLE_COLOR }} -n prometheus --timeout=120s
+          
+          echo "=== Endpoint Verification ==="
+          kubectl get endpoints sinatra-service -n prometheus -o yaml
+
+      - name: Verify new deployment is responding
+        run: |
+          echo "Testing new deployment directly (bypassing service)"
+          NEW_POD_IP=$(kubectl get pod -n prometheus -l version=${{ env.IDLE_COLOR }} -o jsonpath='{.items[0].status.podIP}')
+          for i in {1..5}; do
+            STATUS_CODE=$(kubectl run -i --rm --restart=Never curl-test --image=curlimages/curl -- -s -o /dev/null -w "%{http_code}" http://$NEW_POD_IP/health)
+            if [[ "$STATUS_CODE" -eq 200 ]]; then
+              echo "New deployment is healthy"
+              exit 0
+            fi
+            echo "Attempt $i: New deployment returned $STATUS_CODE"
+            sleep 5
+          done
+          echo "New deployment failed health checks"
+          exit 1
 
       - name: Apply sinatra service manifest (ensure it exists)
         run: |
@@ -360,26 +162,35 @@ jobs:
           kubectl patch svc sinatra-service -n prometheus -p \
             "{\"spec\": {\"selector\": {\"app\": \"sinatra\", \"version\": \"${IDLE_COLOR}\"}}}"
 
-
+      - name: Verify service selector was updated
+        run: |
+          CURRENT_SELECTOR=$(kubectl get svc sinatra-service -n prometheus -o jsonpath='{.spec.selector.version}')
+          echo "Service is now routing to $CURRENT_SELECTOR"
+          if [[ "$CURRENT_SELECTOR" != "${{ env.IDLE_COLOR }}" ]]; then
+            echo "ERROR: Service selector wasn't updated correctly"
+            exit 1
+          fi
 
       - name: Port-forward Sinatra service
         run: |
-         echo "Starting port-forward on sinatra-service..."
-         kubectl port-forward svc/sinatra-service 8080:80 -n prometheus &
-         sleep 5
+          echo "Starting port-forward on sinatra-service..."
+          kubectl port-forward svc/sinatra-service 8080:80 -n prometheus &
+          sleep 5
 
-      - name: Verify new deployment is healthy
+      - name: Verify new deployment is healthy through service
         run: |
-         echo "Running health check against the new deployment..."
-         STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health)
-         if [[ "$STATUS_CODE" -ne 200 ]]; then
-         echo "Health check failed with status $STATUS_CODE"
-         exit 1
-         else
-         echo "Health check passed with status $STATUS_CODE"
-         fi
-
-
+          echo "Running health check through service..."
+          for i in {1..5}; do
+            STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health)
+            if [[ "$STATUS_CODE" -eq 200 ]]; then
+              echo "Health check passed with status $STATUS_CODE"
+              exit 0
+            fi
+            echo "Attempt $i: Health check failed with status $STATUS_CODE"
+            sleep 5
+          done
+          echo "Health check failed after 5 attempts"
+          exit 1
 
       - name: Delete old active deployment to free resources (optional)
         run: |
@@ -387,13 +198,26 @@ jobs:
 
   rollback:
     if: failure()
+    needs: [minikube]
     runs-on: ubuntu-latest
     steps:
+      - name: Start Minikube
+        uses: hiberbee/github-action-minikube@latest
+      
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Determine active and idle colors for rollback
         id: rollback_colors
         run: |
           set -e
-          CURRENT=$(kubectl get svc sinatra-service -n prometheus -o jsonpath='{.spec.selector.version}' || echo "")
+          if ! kubectl get svc sinatra-service -n prometheus &>/dev/null; then
+            echo "Service doesn't exist yet, no rollback needed"
+            echo "SKIP_ROLLBACK=true" >> $GITHUB_ENV
+            exit 0
+          fi
+          
+          CURRENT=$(kubectl get svc sinatra-service -n prometheus -o jsonpath='{.spec.selector.version}')
           if [[ "$CURRENT" == "blue" ]]; then
             echo "ACTIVE_COLOR=blue" >> $GITHUB_ENV
             echo "IDLE_COLOR=green" >> $GITHUB_ENV
@@ -402,21 +226,239 @@ jobs:
             echo "IDLE_COLOR=blue" >> $GITHUB_ENV
           fi
 
+      - name: Skip rollback if not needed
+        if: env.SKIP_ROLLBACK == 'true'
+        run: exit 0
+
       - name: Rollback service to previously active deployment
         run: |
-          kubectl patch svc sinatra-service -n prometheus -p '{"spec": {"selector": {"app": "sinatra", "version": "'${ACTIVE_COLOR}'"}}}'
+          kubectl patch svc sinatra-service -n prometheus -p '{"spec": {"selector": {"version": "'${ACTIVE_COLOR}'"}}}'
 
       - name: Delete failed deployment (idle)
         run: |
-          kubectl delete deployment sinatra-${IDLE_COLOR} -n prometheus || echo "No deployment to delete"
+          kubectl delete deployment sinatra-${IDLE_COLOR} -n prometheus --ignore-not-found=true
 
-      - name: Wait to confirm rollback traffic routing
-        run: sleep 20
-
-      - name: Verify rollback is healthy
+      - name: Verify rollback
         run: |
-          STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://<your-service-url>/health)
+          kubectl port-forward svc/sinatra-service 8080:80 -n prometheus &
+          sleep 5
+          STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health)
           if [[ "$STATUS_CODE" -ne 200 ]]; then
-            echo "Health check failed with status $STATUS_CODE"
+            echo "Rollback verification failed with status $STATUS_CODE"
             exit 1
           fi
+          echo "Rollback successful"
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# name: CI/CD Pipeline with Blue-Green Deployment
+
+# on:
+#   push:
+#     branches:
+#       - master
+
+# permissions:
+#   contents: write
+
+# jobs:
+#   test:
+#     runs-on: ubuntu-latest
+#     steps:
+#       - name: Checkout code
+#         uses: actions/checkout@v4
+#       # Add your tests here
+
+#   tag-and-release:
+#     needs: test
+#     runs-on: ubuntu-latest
+#     outputs:
+#       version_tag: ${{ steps.set_tag.outputs.version_tag }}
+#     steps:
+#       - name: Checkout code
+#         uses: actions/checkout@v4
+
+#       - name: Get next version tag (major bump)
+#         id: set_tag
+#         run: |
+#           TAG=$(git tag --sort=-v:refname | head -n1)
+#           echo "Latest tag: $TAG"
+
+#           if [ -z "$TAG" ]; then
+#             NEW_TAG="1.0.0"
+#           else
+#             IFS='.' read -r MAJOR MINOR PATCH <<< "${TAG#v}"
+#             MAJOR=$((MAJOR + 1))
+#             MINOR=0
+#             PATCH=0
+#             NEW_TAG="${MAJOR}.${MINOR}.${PATCH}"
+#           fi
+
+#           echo "version_tag=$NEW_TAG" >> $GITHUB_OUTPUT
+
+#       - name: Create Git tag
+#         env:
+#           GH_PAT: ${{ secrets.GH_PAT }}
+#         run: |
+#           git config user.name "GitHub Actions"
+#           git config user.email "actions@github.com"
+#           git remote set-url origin https://x-access-token:${GH_PAT}@github.com/${{ github.repository }}
+
+#           TAG="v${{ steps.set_tag.outputs.version_tag }}"
+#           if git ls-remote --tags origin | grep -q "refs/tags/${TAG}$"; then
+#             echo "Tag ${TAG} already exists on remote, skipping push."
+#           else
+#             git tag "${TAG}"
+#             git push origin "${TAG}"
+#             echo "Tag ${TAG} created and pushed."
+#           fi
+
+#   minikube:
+#     needs: tag-and-release
+#     runs-on: ubuntu-latest
+#     steps:
+#       - name: Checkout code
+#         uses: actions/checkout@v4
+
+#       - name: Start Minikube
+#         id: minikube
+#         uses: hiberbee/github-action-minikube@latest
+#       - name: Get Minikube IP
+#         run: echo ${{ steps.minikube.outputs.ip }}
+
+#       - name: Log in to Docker Hub
+#         uses: docker/login-action@v3
+#         with:
+#           username: ${{ secrets.DOCKER_USERNAME }}
+#           password: ${{ secrets.DOCKER_PASSWORD }}
+
+#       - name: Build and push Docker image
+#         env:
+#           VERSION: ${{ needs.tag-and-release.outputs.version_tag }}
+#         run: |
+#           docker build -t ${{ secrets.DOCKER_USERNAME }}/sanity:${VERSION} .
+#           docker push ${{ secrets.DOCKER_USERNAME }}/sanity:${VERSION}
+
+
+#       - name: Ensure prometheus namespace exists
+#         run: |
+#           kubectl get namespace prometheus || kubectl create namespace prometheus
+
+#       - name: Determine active and idle colors
+#         id: color_switch
+#         run: |
+#           set -e
+#           CURRENT=$(kubectl get svc sinatra-service -n prometheus -o jsonpath='{.spec.selector.version}' || echo "")
+#           echo "Current active deployment color: $CURRENT"
+
+#           if [[ "$CURRENT" == "blue" ]]; then
+#             echo "ACTIVE_COLOR=blue" >> $GITHUB_ENV
+#             echo "IDLE_COLOR=green" >> $GITHUB_ENV
+#           else
+#             echo "ACTIVE_COLOR=green" >> $GITHUB_ENV
+#             echo "IDLE_COLOR=blue" >> $GITHUB_ENV
+#           fi
+
+#       - name: Replace version in deployment manifests for idle (green/blue) deployment
+#         env:
+#           VERSION: ${{ needs.tag-and-release.outputs.version_tag }}
+#           IDLE_COLOR: ${{ env.IDLE_COLOR }}
+#         run: |
+#           mkdir -p k8s
+#           sed "s/__VERSION__/${VERSION}/g; s/sinatra-[a-z]*/sinatra-${IDLE_COLOR}/g; s/version: [a-z]*/version: ${IDLE_COLOR}/g" sinatra-blue.yaml > k8s/sinatra-${IDLE_COLOR}-updated.yaml
+#           cp sinatra-service.yaml k8s/sinatra-service.yaml
+
+#       - name: Apply idle deployment manifest
+#         run: |
+#           kubectl apply -f k8s/sinatra-${{ env.IDLE_COLOR }}-updated.yaml -n prometheus
+#           kubectl describe deployment sinatra-${{ env.IDLE_COLOR }} -n prometheus
+
+#       - name: Wait for idle deployment rollout to complete
+#         run: |
+#           kubectl rollout status deployment/sinatra-${{ env.IDLE_COLOR }} -n prometheus --timeout=120s
+
+#       - name: Apply sinatra service manifest (ensure it exists)
+#         run: |
+#           kubectl apply -f k8s/sinatra-service.yaml -n prometheus
+
+#       - name: Switch service to idle deployment
+#         env:
+#           IDLE_COLOR: ${{ env.IDLE_COLOR }}
+#         run: |
+#           kubectl patch svc sinatra-service -n prometheus -p \
+#             "{\"spec\": {\"selector\": {\"app\": \"sinatra\", \"version\": \"${IDLE_COLOR}\"}}}"
+
+
+
+#       - name: Port-forward Sinatra service
+#         run: |
+#          echo "Starting port-forward on sinatra-service..."
+#          kubectl port-forward svc/sinatra-service 8080:80 -n prometheus &
+#          sleep 5
+
+#       - name: Verify new deployment is healthy
+#         run: |
+#          echo "Running health check against the new deployment..."
+#          STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health)
+#          if [[ "$STATUS_CODE" -ne 200 ]]; then
+#          echo "Health check failed with status $STATUS_CODE"
+#          exit 1
+#          else
+#          echo "Health check passed with status $STATUS_CODE"
+#          fi
+
+
+
+#       - name: Delete old active deployment to free resources (optional)
+#         run: |
+#           kubectl delete deployment sinatra-${{ env.ACTIVE_COLOR }} -n prometheus || echo "No old deployment to delete"
+
+#   rollback:
+#     if: failure()
+#     runs-on: ubuntu-latest
+#     steps:
+#       - name: Determine active and idle colors for rollback
+#         id: rollback_colors
+#         run: |
+#           set -e
+#           CURRENT=$(kubectl get svc sinatra-service -n prometheus -o jsonpath='{.spec.selector.version}' || echo "")
+#           if [[ "$CURRENT" == "blue" ]]; then
+#             echo "ACTIVE_COLOR=blue" >> $GITHUB_ENV
+#             echo "IDLE_COLOR=green" >> $GITHUB_ENV
+#           else
+#             echo "ACTIVE_COLOR=green" >> $GITHUB_ENV
+#             echo "IDLE_COLOR=blue" >> $GITHUB_ENV
+#           fi
+
+#       - name: Rollback service to previously active deployment
+#         run: |
+#           kubectl patch svc sinatra-service -n prometheus -p '{"spec": {"selector": {"app": "sinatra", "version": "'${ACTIVE_COLOR}'"}}}'
+
+#       - name: Delete failed deployment (idle)
+#         run: |
+#           kubectl delete deployment sinatra-${IDLE_COLOR} -n prometheus || echo "No deployment to delete"
+
+#       - name: Wait to confirm rollback traffic routing
+#         run: sleep 20
+
+#       - name: Verify rollback is healthy
+#         run: |
+#           STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://<your-service-url>/health)
+#           if [[ "$STATUS_CODE" -ne 200 ]]; then
+#             echo "Health check failed with status $STATUS_CODE"
+#             exit 1
+#           fi
