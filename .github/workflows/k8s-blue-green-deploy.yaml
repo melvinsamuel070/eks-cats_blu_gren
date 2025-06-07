@@ -288,19 +288,24 @@ jobs:
       - name: Wait a bit to confirm traffic switched
         run: sleep 20
 
+      - name: Port-forward Sinatra service
+        run: |
+         echo "Starting port-forward on sinatra-service..."
+         kubectl port-forward svc/sinatra-service 8080:8000 -n prometheus &
+         sleep 5  # give it a moment to establish
+
       - name: Verify new deployment is healthy
         run: |
-           # Correct the curl command to avoid the double "http://" and wrong path
-           echo "Running health check against the new deployment..."
+         echo "Running health check against the new deployment..."
 
-           # Option 1: If you're testing locally with port-forward
-           #curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health 
-           if [[ "$STATUS_CODE" -ne 200 ]]; then
-           echo "Health check failed with status $STATUS_CODE"
-           exit 1
-           else
-           echo "Health check passed with status $STATUS_CODE"
-           fi
+         STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health)
+
+         if [[ "$STATUS_CODE" -ne 200 ]]; then
+         echo "Health check failed with status $STATUS_CODE"
+         exit 1
+         else
+         echo "Health check passed with status $STATUS_CODE"
+         fi
 
 
       - name: Delete old active deployment to free resources (optional)
