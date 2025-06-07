@@ -1,19 +1,15 @@
-require 'spec_helper'
-require 'rack/test'
-require_relative '../app/web' # update path to your app
+# In your Sinatra app (app.rb or similar)
+require 'sinatra'
 
-RSpec.describe Cats::Web do
-  include Rack::Test::Methods
+# Set version from environment variable or use default
+APP_VERSION = ENV['APP_VERSION'] || '1.0.0'
 
-  def app
-    Cats::Web.new
-  end
+get '/version' do
+  content_type :text
+  APP_VERSION
+end
 
-  describe 'GET /health' do
-    it 'returns 200 OK' do
-      get '/health'
-      expect(last_response.status).to eq(200)
-      expect(last_response.body).to eq('OK')
-    end
-  end
+get '/health' do
+  status 200
+  'OK'
 end

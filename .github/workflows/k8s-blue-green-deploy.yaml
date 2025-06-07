@@ -631,6 +631,8 @@ jobs:
           cat k8s/sinatra-${IDLE_COLOR}-updated.yaml
           echo "::endgroup::"
 
+
+
       - name: Apply idle deployment manifest
         run: |
           echo "Deploying sinatra-${{ env.IDLE_COLOR }} with version ${{ needs.tag-and-release.outputs.version_tag }}"
@@ -640,6 +642,8 @@ jobs:
           kubectl describe deployment sinatra-${{ env.IDLE_COLOR }} -n prometheus
           echo "::endgroup::"
 
+
+
       - name: Wait for idle deployment rollout
         run: |
           kubectl rollout status deployment/sinatra-${{ env.IDLE_COLOR }} -n prometheus --timeout=120s
@@ -647,6 +651,8 @@ jobs:
           echo "::group::Pod Status"
           kubectl get pods -n prometheus -l app=sinatra -o wide
           echo "::endgroup::"
+
+
 
       - name: Verify new deployment pods
         run: |
@@ -660,6 +666,7 @@ jobs:
           echo "Expected image: ${{ secrets.DOCKER_USERNAME }}/sanity:${{ needs.tag-and-release.outputs.version_tag }}"
           echo "::endgroup::"
 
+
       - name: Apply sinatra service manifest
         run: |
           kubectl apply -f k8s/sinatra-service.yaml -n prometheus
@@ -668,6 +675,8 @@ jobs:
           kubectl get svc sinatra-service -n prometheus -o wide
           kubectl describe svc sinatra-service -n prometheus
           echo "::endgroup::"
+
+
 
       - name: Switch service to idle deployment
         env:
@@ -680,6 +689,9 @@ jobs:
           echo "::group::Service Status After Switch"
           kubectl get svc sinatra-service -n prometheus -o jsonpath='{.spec.selector}' | jq
           echo "::endgroup::"
+
+
+
 
       - name: Verify traffic routing
         run: |
@@ -706,6 +718,9 @@ jobs:
           
           pkill -f "kubectl port-forward"
 
+
+
+
       - name: Cleanup old deployment (optional)
         if: env.ACTIVE_COLOR != 'none'
         run: |
@@ -715,6 +730,8 @@ jobs:
           echo "::group::Remaining Deployments"
           kubectl get deployments -n prometheus
           echo "::endgroup::"
+
+
 
   rollback:
     if: failure()
@@ -749,6 +766,8 @@ jobs:
             exit 1
           fi
 
+
+
       - name: Perform rollback
         if: env.ACTIVE_COLOR != 'none'
         run: |
@@ -761,6 +780,8 @@ jobs:
           
           echo "Deleting failed ${{ env.IDLE_COLOR }} deployment"
           kubectl delete deployment sinatra-${{ env.IDLE_COLOR }} -n prometheus --ignore-not-found=true
+
+
 
       - name: Verify rollback
         if: env.ACTIVE_COLOR != 'none'
