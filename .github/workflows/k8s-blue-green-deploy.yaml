@@ -343,6 +343,7 @@ jobs:
       - name: Apply idle deployment manifest
         run: |
           kubectl apply -f k8s/sinatra-${{ env.IDLE_COLOR }}-updated.yaml -n prometheus
+          kubectl describe deployment sinatra-${{ env.IDLE_COLOR }} -n prometheus
 
       - name: Wait for idle deployment rollout to complete
         run: |
