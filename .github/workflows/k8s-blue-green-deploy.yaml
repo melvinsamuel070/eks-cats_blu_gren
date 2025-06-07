@@ -590,32 +590,47 @@ jobs:
 
       - name: Verify deployed version
         run: |
-         echo "Starting port-forward..."
-         kubectl port-forward svc/sinatra-service 8080:8000 -n default &  # Changed namespace
-         sleep 5
-    
-         echo "::group::Version Verification"
-         APP_VERSION=$(curl -s http://localhost:8080/version)
-         WORKFLOW_VERSION="${{ needs.tag-and-release.outputs.version_tag }}"
-    
-         echo "Application reports version: $APP_VERSION"
-         echo "Workflow version: $WORKFLOW_VERSION"
-    
-         if [ "$APP_VERSION" != "$WORKFLOW_VERSION" ]; then
-         echo "::error::Version mismatch! Application reports $APP_VERSION but workflow expects $WORKFLOW_VERSION"
-         exit 1
-         else
-         echo "Version matches!"
-         fi
-         echo "::endgroup::"
-    
-         # Kill the port-forward process
-         pkill -f "kubectl port-forward"
+          # Create prometheus namespace if it doesn't exist
+           if ! kubectl get ns prometheus >/dev/null 2>&1; then
+           echo "Creating prometheus namespace..."
+           kubectl create namespace prometheus
+          fi
+
+            # Install Prometheus (simplified deployment without Helm)
+             echo "Installing Prometheus..."
+            kubectl apply -f https://raw.githubusercontent.com/prometheus-operator/kube-prometheus/main/manifests/setup -n prometheus
+            kubectl apply -f https://raw.githubusercontent.com/prometheus-operator/kube-prometheus/main/manifests -n prometheus
+
+          # Wait for Prometheus pods to be ready
+           echo "Waiting for Prometheus to be ready..."
+           kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=prometheus -n prometheus --timeout=120s
+
+           echo "Starting port-forward..."
+           kubectl port-forward svc/sinatra-service 8080:8000 -n prometheus &
+           sleep 5
+
+           echo "::group::Version Verification"
+            APP_VERSION=$(curl -s http://localhost:8080/version)
+            WORKFLOW_VERSION="${{ needs.tag-and-release.outputs.version_tag }}"
+   
+             echo "Application reports version: $APP_VERSION"
+            echo "Workflow version: $WORKFLOW_VERSION"
+
+          if [ "$APP_VERSION" != "$WORKFLOW_VERSION" ]; then
+             echo "::error::Version mismatch! Application reports $APP_VERSION but workflow expects $WORKFLOW_VERSION"
+          exit 1
+           else
+              echo "Version matches!"
+            fi
+           echo "::endgroup::"
+
+          # Kill the port-forward process
+            pkill -f "kubectl port-forward"
+   
 
 
 
-
-
+           
       - name: Ensure prometheus namespace exists
         run: |
           kubectl create namespace prometheus --dry-run=client -o yaml | kubectl apply -f -
