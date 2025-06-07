@@ -157,52 +157,54 @@ jobs:
           kubectl delete deployment sinatra-${{ env.ACTIVE_COLOR }} -n $NAMESPACE || echo "No old deployment to delete"
 
   rollback:
-    if: failure()
-    runs-on: ubuntu-latest
-    env:
-      NAMESPACE: prometheus
-    steps:
+     if: failure()
+     runs-on: ubuntu-latest
+     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Determine active and idle colors for rollback
         id: rollback_colors
         run: |
-          set -e
-          CURRENT=$(kubectl get svc sinatra-service -n $NAMESPACE -o jsonpath='{.spec.selector.version}' || echo "")
-          if [[ "$CURRENT" == "blue" ]]; then
-            echo "ACTIVE_COLOR=blue" >> $GITHUB_ENV
-            echo "IDLE_COLOR=green" >> $GITHUB_ENV
-          else
-            echo "ACTIVE_COLOR=green" >> $GITHUB_ENV
-            echo "IDLE_COLOR=blue" >> $GITHUB_ENV
-          fi
+         set -e
+         CURRENT=$(kubectl get svc sinatra-service -n prometheus -o jsonpath='{.spec.selector.version}' || echo "")
+         if [[ "$CURRENT" == "blue" ]]; then
+          echo "ACTIVE_COLOR=blue" >> $GITHUB_ENV
+          echo "IDLE_COLOR=green" >> $GITHUB_ENV
+         else
+          echo "ACTIVE_COLOR=green" >> $GITHUB_ENV
+          echo "IDLE_COLOR=blue" >> $GITHUB_ENV
+         fi
+
+      - name: Debug pods and deployments before rollback
+        run: |
+         kubectl get pods -n prometheus -o wide
+         kubectl get deployments -n prometheus
 
       - name: Rollback service to previously active deployment
         run: |
-          kubectl patch svc sinatra-service -n $NAMESPACE -p '{"spec": {"selector": {"app": "sinatra", "version": "'${ACTIVE_COLOR}'"}}}'
+         kubectl patch svc sinatra-service -n prometheus -p "{\"spec\": {\"selector\": {\"app\": \"sinatra\", \"version\": \"${ACTIVE_COLOR}\"}}}"
+
+      - name: Wait for old deployment rollout to complete
+        run: |
+         kubectl rollout status deployment/sinatra-${ACTIVE_COLOR} -n prometheus --timeout=300s
 
       - name: Delete failed deployment (idle)
         run: |
-          kubectl delete deployment sinatra-${IDLE_COLOR} -n $NAMESPACE || echo "No deployment to delete"
+         kubectl delete deployment sinatra-${IDLE_COLOR} -n prometheus || echo "No deployment to delete"
 
-      - name: Wait to confirm rollback traffic routing
-        run: sleep 20
-
-      - name: Port-forward Sinatra service after rollback
+      - name: Debug pods and deployments after rollback
         run: |
-          kubectl port-forward svc/sinatra-service 8080:80 -n $NAMESPACE &
-          sleep 5
+         kubectl get pods -n prometheus -o wide
+         kubectl get deployments -n prometheus
 
       - name: Verify rollback is healthy
         run: |
-          STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health)
-          if [[ "$STATUS_CODE" -ne 200 ]]; then
-            echo "Rollback health check failed with status $STATUS_CODE"
-            exit 1
-          else
-            echo "Rollback health check passed"
-          fi
-
-
-
+         STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health)
+         if [[ "$STATUS_CODE" -ne 200 ]]; then
+          echo "Health check failed with status $STATUS_CODE"
+          exit 1
+         fi
 
 
 
