@@ -575,7 +575,6 @@ jobs:
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
-
       - name: Build and push Docker image
         env:
          VERSION: ${{ needs.tag-and-release.outputs.version_tag }}
@@ -586,46 +585,15 @@ jobs:
          -t ${{ secrets.DOCKER_USERNAME }}/sanity:$VERSION .
          docker push ${{ secrets.DOCKER_USERNAME }}/sanity:$VERSION
 
-         
-      - name: Verify deployed version
-        run: |
-             kubectl create namespace prometheus
-             kubectl apply -f prometheus-deployment.yaml -n prometheus  
-              # Verify Prometheus is running
-             echo "Checking Prometheus deployment..."
-              if ! kubectl get pods -n prometheus | grep -q prometheus; then
-              echo "::error::Prometheus not found in prometheus namespace"
-              exit 1
-              fi
-
-              echo "Starting port-forward..."
-             kubectl port-forward svc/sinatra-service 8080:8000 -n prometheus &
-              PORT_FORWARD_PID=$!
-              sleep 5
- 
-             echo "::group::Version Verification"
-              APP_VERSION=$(curl -s http://localhost:8080/version)
-             WORKFLOW_VERSION="${{ needs.tag-and-release.outputs.version_tag }}"
-
-             echo "Application reports version: $APP_VERSION"
-             echo "Workflow version: $WORKFLOW_VERSION"
-
-             if [ "$APP_VERSION" != "$WORKFLOW_VERSION" ]; then
-             echo "::error::Version mismatch! Application reports $APP_VERSION but workflow expects $WORKFLOW_VERSION"
-             exit 1
-             else
-             echo "Version matches!"
-             fi
-              echo "::endgroup::"
-
-             # Clean up
-             kill $PORT_FORWARD_PID
-
-
-           
       - name: Ensure prometheus namespace exists
         run: |
           kubectl create namespace prometheus --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Deploy Prometheus
+        run: |
+          kubectl apply -f prometheus-deployment.yaml -n prometheus
+          echo "Waiting for Prometheus to be ready..."
+          kubectl wait --for=condition=available deployment/prometheus -n prometheus --timeout=120s
 
       - name: Determine active and idle colors
         id: color_switch
@@ -665,8 +633,6 @@ jobs:
           cat k8s/sinatra-${IDLE_COLOR}-updated.yaml
           echo "::endgroup::"
 
-
-
       - name: Apply idle deployment manifest
         run: |
           echo "Deploying sinatra-${{ env.IDLE_COLOR }} with version ${{ needs.tag-and-release.outputs.version_tag }}"
@@ -676,8 +642,6 @@ jobs:
           kubectl describe deployment sinatra-${{ env.IDLE_COLOR }} -n prometheus
           echo "::endgroup::"
 
-
-
       - name: Wait for idle deployment rollout
         run: |
           kubectl rollout status deployment/sinatra-${{ env.IDLE_COLOR }} -n prometheus --timeout=120s
@@ -685,8 +649,6 @@ jobs:
           echo "::group::Pod Status"
           kubectl get pods -n prometheus -l app=sinatra -o wide
           echo "::endgroup::"
-
-
 
       - name: Verify new deployment pods
         run: |
@@ -700,6 +662,35 @@ jobs:
           echo "Expected image: ${{ secrets.DOCKER_USERNAME }}/sanity:${{ needs.tag-and-release.outputs.version_tag }}"
           echo "::endgroup::"
 
+      - name: Verify deployed version
+        run: |
+          echo "Starting port-forward to verify new deployment..."
+          kubectl port-forward svc/sinatra-service 8080:80 -n prometheus &
+          PORT_FORWARD_PID=$!
+          sleep 5
+          
+          echo "::group::Version Verification (New Deployment)"
+          for i in {1..5}; do
+            APP_VERSION=$(curl -s http://localhost:8080/version || true)
+            if [ -n "$APP_VERSION" ]; then
+              break
+            fi
+            sleep 2
+          done
+          
+          WORKFLOW_VERSION="${{ needs.tag-and-release.outputs.version_tag }}"
+          echo "Application reports version: $APP_VERSION"
+          echo "Workflow version: $WORKFLOW_VERSION"
+          
+          if [ "$APP_VERSION" != "$WORKFLOW_VERSION" ]; then
+            echo "::error::Version mismatch! Application reports $APP_VERSION but workflow expects $WORKFLOW_VERSION"
+            exit 1
+          else
+            echo "Version matches!"
+          fi
+          echo "::endgroup::"
+          
+          kill $PORT_FORWARD_PID || true
 
       - name: Apply sinatra service manifest
         run: |
@@ -709,8 +700,6 @@ jobs:
           kubectl get svc sinatra-service -n prometheus -o wide
           kubectl describe svc sinatra-service -n prometheus
           echo "::endgroup::"
-
-
 
       - name: Switch service to idle deployment
         env:
@@ -724,20 +713,17 @@ jobs:
           kubectl get svc sinatra-service -n prometheus -o jsonpath='{.spec.selector}' | jq
           echo "::endgroup::"
 
-
-
-
       - name: Verify traffic routing
         run: |
           echo "::group::Current Endpoints"
           kubectl get endpoints sinatra-service -n prometheus -o wide
           echo "::endgroup::"
           
-          echo "Starting port-forward for verification..."
+          echo "Starting port-forward for final verification..."
           kubectl port-forward svc/sinatra-service 8080:80 -n prometheus &
           sleep 5
           
-          echo "::group::Version Verification"
+          echo "::group::Final Version Verification"
           APP_VERSION=$(curl -s http://localhost:8080/version)
           EXPECTED_VERSION="${{ needs.tag-and-release.outputs.version_tag }}"
           
@@ -752,9 +738,6 @@ jobs:
           
           pkill -f "kubectl port-forward"
 
-
-
-
       - name: Cleanup old deployment (optional)
         if: env.ACTIVE_COLOR != 'none'
         run: |
@@ -764,8 +747,6 @@ jobs:
           echo "::group::Remaining Deployments"
           kubectl get deployments -n prometheus
           echo "::endgroup::"
-
-
 
   rollback:
     if: failure()
@@ -800,8 +781,6 @@ jobs:
             exit 1
           fi
 
-
-
       - name: Perform rollback
         if: env.ACTIVE_COLOR != 'none'
         run: |
@@ -814,8 +793,6 @@ jobs:
           
           echo "Deleting failed ${{ env.IDLE_COLOR }} deployment"
           kubectl delete deployment sinatra-${{ env.IDLE_COLOR }} -n prometheus --ignore-not-found=true
-
-
 
       - name: Verify rollback
         if: env.ACTIVE_COLOR != 'none'
