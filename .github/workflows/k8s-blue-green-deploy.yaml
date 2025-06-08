@@ -593,8 +593,7 @@ jobs:
         run: |
           kubectl apply -f prometheus-deployment.yaml -n prometheus
           echo "Waiting for Prometheus to be ready..."
-          kubectl wait --for=condition=available deployment/prometheus -n prometheus --timeout=120s
-
+          kubectl wait --for=condition=available deployment/prometheus-server -n prometheus --timeout=120s
       - name: Determine active and idle colors
         id: color_switch
         run: |
