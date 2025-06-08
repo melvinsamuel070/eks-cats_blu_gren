@@ -591,9 +591,26 @@ jobs:
 
       - name: Deploy Prometheus
         run: |
+          # Apply Prometheus resources
           kubectl apply -f prometheus-deployment.yaml -n prometheus
-          echo "Waiting for Prometheus to be ready..."
-          kubectl wait --for=condition=available deployment/prometheus-server -n prometheus --timeout=120s
+          
+          echo "::group::Debug: Show Prometheus resources"
+          kubectl get deployment,svc,pods -n prometheus -o wide
+          kubectl describe deployment prometheus-server -n prometheus
+          echo "::endgroup::"
+          
+          echo "Waiting for Prometheus to be ready (timeout: 5 minutes)..."
+          if ! kubectl wait --for=condition=available deployment/prometheus-server \
+              --timeout=300s -n prometheus; then
+              
+            echo "::error::Prometheus deployment timed out"
+            echo "::group::Debug: Pod logs and events"
+            kubectl get events -n prometheus --sort-by='.lastTimestamp'
+            kubectl logs -n prometheus -l app=prometheus --tail=50
+            echo "::endgroup::"
+            exit 1
+          fi
+          echo "Prometheus is ready"
       - name: Determine active and idle colors
         id: color_switch
         run: |
