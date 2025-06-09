@@ -7,9 +7,13 @@ data:
   prometheus.yml: |
     global:
       scrape_interval: 15s
+      evaluation_interval: 15s  # Recommended to add this
 
     scrape_configs:
       - job_name: 'sinatra'
         metrics_path: /metrics
         static_configs:
-          - targets: ['sinatra-service.prometheus.svc.cluster.local:80']
+          - targets: ['sinatra-service.prometheus.svc.cluster.local:8000']  # Changed to targetPort 8000
+        # Optional but recommended:
+        scrape_interval: 15s
+        scrape_timeout: 10s
