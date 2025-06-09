@@ -592,7 +592,7 @@ jobs:
       - name: Deploy Prometheus
         run: |
            # First, apply the ConfigMap
-            kubectl apply -f prometheus-config.yaml -n prometheus
+            kubectl apply -f prometheus-configmap.yaml -n prometheus
     
             # Verify ConfigMap exists
            echo "::group::Verify ConfigMap"
