@@ -591,26 +591,35 @@ jobs:
 
       - name: Deploy Prometheus
         run: |
-          # Apply Prometheus resources
-          kubectl apply -f prometheus-deployment.yaml -n prometheus
-          
-          echo "::group::Debug: Show Prometheus resources"
-          kubectl get deployment,svc,pods -n prometheus -o wide
-          kubectl describe deployment prometheus-server -n prometheus
-          echo "::endgroup::"
-          
-          echo "Waiting for Prometheus to be ready (timeout: 5 minutes)..."
-          if ! kubectl wait --for=condition=available deployment/prometheus-server \
-              --timeout=300s -n prometheus; then
-              
-            echo "::error::Prometheus deployment timed out"
-            echo "::group::Debug: Pod logs and events"
-            kubectl get events -n prometheus --sort-by='.lastTimestamp'
-            kubectl logs -n prometheus -l app=prometheus --tail=50
+           # First, apply the ConfigMap
+            kubectl apply -f prometheus-config.yaml -n prometheus
+    
+            # Verify ConfigMap exists
+           echo "::group::Verify ConfigMap"
+           kubectl get configmap prometheus-server-config -n prometheus -o yaml
+           echo "::endgroup::"
+    
+           # Now apply the Deployment
+           kubectl apply -f prometheus-deployment.yaml -n prometheus
+    
+           echo "::group::Debug: Show Prometheus resources"
+           kubectl get deployment,svc,pods,configmap -n prometheus -o wide
+           kubectl describe deployment prometheus-server -n prometheus
+           echo "::endgroup::"
+    
+           echo "Waiting for Prometheus to be ready (timeout: 5 minutes)..."
+           if ! kubectl wait --for=condition=available deployment/prometheus-server \
+           --timeout=300s -n prometheus; then
+        
+           echo "::error::Prometheus deployment timed out"
+           echo "::group::Debug: Pod logs and events"
+           kubectl get events -n prometheus --sort-by='.lastTimestamp'
+           kubectl describe pod -n prometheus -l app=prometheus
+           kubectl logs -n prometheus -l app=prometheus --all-containers=true --tail=50
             echo "::endgroup::"
-            exit 1
-          fi
-          echo "Prometheus is ready"
+           exit 1
+           fi
+           echo "Prometheus is ready"
       - name: Determine active and idle colors
         id: color_switch
         run: |
