@@ -712,12 +712,16 @@ jobs:
          echo "::group::Version Verification"
          APP_VERSION=""
          for i in {1..10}; do
-         # Added verbose output for debugging
          echo "Attempt $i/10 - Testing endpoint..."
-         APP_VERSION=$(curl -v -s http://localhost:8080/version | jq -r '.version' || echo "")
+      
+         # Try JSON first, then fall back to plain text
+         RESPONSE=$(curl -sf -H "Accept: application/json" http://localhost:8080/version || curl -sf http://localhost:8080/version || echo "")
+         APP_VERSION=$(echo "$RESPONSE" | jq -r '.version' 2>/dev/null || echo "$RESPONSE")
+      
          if [ -n "$APP_VERSION" ]; then
          break
          fi
+      
          echo "Attempt failed, retrying..."
          sleep 3
          done
@@ -727,16 +731,18 @@ jobs:
          echo "Workflow version: '$WORKFLOW_VERSION'"
 
          if [ -z "$APP_VERSION" ]; then
-          echo "::error::Failed to get version from application after 10 attempts"
+         echo "::error::Failed to get version from application after 10 attempts"
          echo "::group::Debugging Information"
          echo "Current endpoints:"
          kubectl get endpoints sinatra-service -n prometheus -o wide
-          echo "Pod details:"
-          kubectl get pods -n prometheus -l app=sinatra -o wide
-          echo "Service details:"
-          kubectl get svc sinatra-service -n prometheus -o wide
+         echo "Pod details:"
+         kubectl get pods -n prometheus -l app=sinatra -o wide
+         echo "Service details:"
+         kubectl get svc sinatra-service -n prometheus -o wide
          echo "Application logs:"
          kubectl logs -n prometheus -l app=sinatra --tail=50
+         echo "Testing endpoint directly:"
+         curl -v http://localhost:8080/version || true
          echo "::endgroup::"
          exit 1
          elif [ "$APP_VERSION" != "$WORKFLOW_VERSION" ]; then
@@ -746,8 +752,6 @@ jobs:
          echo "Version matches!"
          fi
          echo "::endgroup::"
-
-
 
 
 

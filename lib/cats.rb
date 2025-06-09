@@ -83,8 +83,8 @@ module Cats
   class Web < Sinatra::Base
     configure do
       set :url, URI('https://thecatapi.com/api/images/get').freeze
-      set :version, ENV['APP_VERSION'] || '1.0.0' # Add version setting
-
+      set :version, ENV['APP_VERSION'] || '1.0.0'
+      
       enable :logging
       use Rack::CommonLogger, $stdout
     end
@@ -95,10 +95,15 @@ module Cats
       'OK'
     end
 
-    # Add version endpoint
+    # Version endpoint that responds to both JSON and plain text
     get '/version' do
-      content_type :text/plain
-      settings.version
+      if request.accept?('application/json')
+        content_type :json
+        { version: settings.version }.to_json
+      else
+        content_type :text/plain
+        settings.version
+      end
     end
 
     get '/' do
