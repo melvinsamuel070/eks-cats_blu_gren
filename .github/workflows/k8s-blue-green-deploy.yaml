@@ -701,10 +701,10 @@ jobs:
       - name: Verify deployed version
         run: |
          echo "Checking for running pods..."
-          kubectl get pods -n prometheus -l app=sinatra --show-labels
+         kubectl get pods -n prometheus -l app=sinatra --show-labels
 
-         echo "Starting port-forward (matching service targetPort)..."
-         kubectl port-forward svc/sinatra-service 8080:8000 -n prometheus &
+         echo "Starting port-forward (using service port 80)..."
+         kubectl port-forward svc/sinatra-service 8080:80 -n prometheus &
          PORT_FORWARD_PID=$!
          trap "kill $PORT_FORWARD_PID || true" EXIT
          sleep 5
@@ -712,11 +712,13 @@ jobs:
          echo "::group::Version Verification"
          APP_VERSION=""
          for i in {1..10}; do
-          APP_VERSION=$(curl -sf http://localhost:8080/version | jq -r '.version' || echo "")
+         # Added verbose output for debugging
+         echo "Attempt $i/10 - Testing endpoint..."
+         APP_VERSION=$(curl -v -s http://localhost:8080/version | jq -r '.version' || echo "")
          if [ -n "$APP_VERSION" ]; then
-          break
+         break
          fi
-         echo "Attempt $i/10 failed, retrying..."
+         echo "Attempt failed, retrying..."
          sleep 3
          done
 
@@ -725,8 +727,17 @@ jobs:
          echo "Workflow version: '$WORKFLOW_VERSION'"
 
          if [ -z "$APP_VERSION" ]; then
-         echo "::error::Failed to get version from application after 10 attempts"
+          echo "::error::Failed to get version from application after 10 attempts"
+         echo "::group::Debugging Information"
+         echo "Current endpoints:"
+         kubectl get endpoints sinatra-service -n prometheus -o wide
+          echo "Pod details:"
+          kubectl get pods -n prometheus -l app=sinatra -o wide
+          echo "Service details:"
+          kubectl get svc sinatra-service -n prometheus -o wide
+         echo "Application logs:"
          kubectl logs -n prometheus -l app=sinatra --tail=50
+         echo "::endgroup::"
          exit 1
          elif [ "$APP_VERSION" != "$WORKFLOW_VERSION" ]; then
          echo "::error::Version mismatch! Application reports '$APP_VERSION' but workflow expects '$WORKFLOW_VERSION'"
@@ -735,6 +746,11 @@ jobs:
          echo "Version matches!"
          fi
          echo "::endgroup::"
+
+
+
+
+
 
       - name: Switch service to idle deployment
         env:
