@@ -505,6 +505,487 @@
 
 
 
+# name: CI/CD Pipeline with Verified Blue-Green Deployment
+
+# on:
+#   push:
+#     branches:
+#       - master
+
+# permissions:
+#   contents: write
+
+# jobs:
+#   test:
+#     runs-on: ubuntu-latest
+#     steps:
+#       - name: Checkout code
+#         uses: actions/checkout@v4
+#       # Add your tests here
+
+#   tag-and-release:
+#     needs: test
+#     runs-on: ubuntu-latest
+#     outputs:
+#       version_tag: ${{ steps.set_tag.outputs.version_tag }}
+#     steps:
+#       - name: Checkout code
+#         uses: actions/checkout@v4
+#         with:
+#           fetch-depth: 0  # Needed to get all tags
+
+#       - name: Get next version tag (major bump)
+#         id: set_tag
+#         run: |
+#           git fetch --tags
+#           TAG=$(git tag --sort=-v:refname | head -n1)
+#           echo "::group::Current Tags"
+#           git tag --sort=-v:refname
+#           echo "::endgroup::"
+          
+#           if [ -z "$TAG" ]; then
+#             NEW_TAG="1.0.0"
+#             echo "No existing tags found, starting with $NEW_TAG"
+#           else
+#             IFS='.' read -r MAJOR MINOR PATCH <<< "${TAG#v}"
+#             NEW_MAJOR=$((MAJOR + 1))
+#             NEW_TAG="${NEW_MAJOR}.0.0"
+#             echo "Current version: v$MAJOR.$MINOR.$PATCH"
+#             echo "New version: $NEW_TAG (major version bump)"
+#           fi
+          
+#           echo "version_tag=$NEW_TAG" >> $GITHUB_OUTPUT
+#           echo "NEW_VERSION=$NEW_TAG" >> $GITHUB_ENV
+
+#       - name: Create Git tag
+#         env:
+#           GH_PAT: ${{ secrets.GH_PAT }}
+#         run: |
+#           git config user.name "GitHub Actions"
+#           git config user.email "actions@github.com"
+#           git remote set-url origin https://x-access-token:${GH_PAT}@github.com/${{ github.repository }}
+
+#           TAG="v${{ steps.set_tag.outputs.version_tag }}"
+#           if git ls-remote --tags origin | grep -q "refs/tags/${TAG}$"; then
+#             echo "Tag ${TAG} already exists on remote, skipping push."
+#           else
+#             git tag "${TAG}"
+#             git push origin "${TAG}"
+#             echo "Created and pushed tag ${TAG}"
+#           fi
+
+#   minikube:
+#     needs: tag-and-release
+#     runs-on: ubuntu-latest
+#     steps:
+#       - name: Checkout code
+#         uses: actions/checkout@v4
+
+#       - name: Start Minikube
+#         id: minikube
+#         uses: hiberbee/github-action-minikube@latest
+      
+#       - name: Verify Kubernetes cluster
+#         run: |
+#           kubectl cluster-info
+#           kubectl get nodes
+
+
+
+#       - name: Log in to Docker Hub
+#         uses: docker/login-action@v3
+#         with:
+#           username: ${{ secrets.DOCKER_USERNAME }}
+#           password: ${{ secrets.DOCKER_PASSWORD }}
+#       - name: Build and push Docker image
+#         env:
+#          VERSION: ${{ needs.tag-and-release.outputs.version_tag }}
+#         run: |
+#          docker build \
+#          --no-cache \
+#          --build-arg APP_VERSION=$VERSION \
+#          -t ${{ secrets.DOCKER_USERNAME }}/sanity:$VERSION .
+#          docker push ${{ secrets.DOCKER_USERNAME }}/sanity:$VERSION
+
+
+
+#       - name: Ensure prometheus namespace exists
+#         run: |
+#           kubectl create namespace prometheus --dry-run=client -o yaml | kubectl apply -f -
+
+
+
+
+#       - name: Deploy Prometheus
+#         run: |
+#            # First, apply the ConfigMap
+#             kubectl apply -f prometheus-configmap.yaml -n prometheus
+    
+#             # Verify ConfigMap exists
+#            echo "::group::Verify ConfigMap"
+#            kubectl get configmap prometheus-server-config -n prometheus -o yaml
+#            echo "::endgroup::"
+    
+#            # Now apply the Deployment
+#            kubectl apply -f prometheus-deployment.yaml -n prometheus
+    
+#            echo "::group::Debug: Show Prometheus resources"
+#            kubectl get deployment,svc,pods,configmap -n prometheus -o wide
+#            kubectl describe deployment prometheus-server -n prometheus
+#            echo "::endgroup::"
+    
+#            echo "Waiting for Prometheus to be ready (timeout: 5 minutes)..."
+#            if ! kubectl wait --for=condition=available deployment/prometheus-server \
+#            --timeout=300s -n prometheus; then
+        
+#            echo "::error::Prometheus deployment timed out"
+#            echo "::group::Debug: Pod logs and events"
+#            kubectl get events -n prometheus --sort-by='.lastTimestamp'
+#            kubectl describe pod -n prometheus -l app=prometheus
+#            kubectl logs -n prometheus -l app=prometheus --all-containers=true --tail=50
+#             echo "::endgroup::"
+#            exit 1
+#            fi
+#            echo "Prometheus is ready"
+
+
+
+#       - name: Determine active and idle colors
+#         id: color_switch
+#         run: |
+#           set -e
+#           echo "::group::Current Deployment State"
+#           kubectl get deployments -n prometheus --show-labels || echo "No existing deployments"
+#           echo "::endgroup::"
+          
+#           CURRENT=$(kubectl get svc sinatra-service -n prometheus -o jsonpath='{.spec.selector.version}' 2>/dev/null || echo "")
+#           echo "Current active deployment color: ${CURRENT:-none}"
+          
+#           if [[ "$CURRENT" == "blue" ]]; then
+#             echo "New deployment will be GREEN"
+#             echo "ACTIVE_COLOR=blue" >> $GITHUB_ENV
+#             echo "IDLE_COLOR=green" >> $GITHUB_ENV
+#             echo "PREVIOUS_ACTIVE_COLOR=blue" >> $GITHUB_ENV  # Store for rollback
+#           elif [[ "$CURRENT" == "green" ]]; then
+#             echo "New deployment will be BLUE"
+#             echo "ACTIVE_COLOR=green" >> $GITHUB_ENV
+#             echo "IDLE_COLOR=blue" >> $GITHUB_ENV
+#             echo "PREVIOUS_ACTIVE_COLOR=green" >> $GITHUB_ENV  # Store for rollback
+#           else
+#             echo "First deployment - starting with BLUE"
+#             echo "ACTIVE_COLOR=none" >> $GITHUB_ENV
+#             echo "IDLE_COLOR=blue" >> $GITHUB_ENV
+#             echo "PREVIOUS_ACTIVE_COLOR=none" >> $GITHUB_ENV  # Store for rollback
+#           fi
+#           # Output for rollback job
+#           echo "PREVIOUS_ACTIVE_COLOR=${PREVIOUS_ACTIVE_COLOR:-none}" >> $GITHUB_OUTPUT
+
+#       - name: Replace version in deployment manifests
+#         env:
+#           VERSION: ${{ needs.tag-and-release.outputs.version_tag }}
+#           IDLE_COLOR: ${{ env.IDLE_COLOR }}
+#         run: |
+#           mkdir -p k8s
+#           sed "s/__VERSION__/${VERSION}/g; s/sinatra-[a-z]*/sinatra-${IDLE_COLOR}/g; s/version: [a-z]*/version: ${IDLE_COLOR}/g" sinatra-blue.yaml > k8s/sinatra-${IDLE_COLOR}-updated.yaml
+#           cp sinatra-service.yaml k8s/sinatra-service.yaml
+          
+#           echo "::group::Generated Deployment Manifest"
+#           cat k8s/sinatra-${IDLE_COLOR}-updated.yaml
+#           echo "::endgroup::"
+
+#       - name: Apply idle deployment manifest
+#         run: |
+#           echo "Deploying sinatra-${{ env.IDLE_COLOR }} with version ${{ needs.tag-and-release.outputs.version_tag }}"
+#           kubectl apply -f k8s/sinatra-${{ env.IDLE_COLOR }}-updated.yaml -n prometheus
+          
+#           echo "::group::Deployment Details"
+#           kubectl describe deployment sinatra-${{ env.IDLE_COLOR }} -n prometheus
+#           echo "::endgroup::"
+
+#       - name: Wait for idle deployment rollout
+#         run: |
+#           kubectl rollout status deployment/sinatra-${{ env.IDLE_COLOR }} -n prometheus --timeout=120s
+          
+#           echo "::group::Pod Status"
+#           kubectl get pods -n prometheus -l app=sinatra -o wide
+#           echo "::endgroup::"
+
+#       - name: Verify new deployment pods
+#         run: |
+#           echo "::group::New Pod Logs"
+#           kubectl logs -n prometheus -l app=sinatra,version=${{ env.IDLE_COLOR }} --tail=10
+#           echo "::endgroup::"
+          
+#           echo "::group::New Pod Details"
+#           kubectl get pods -n prometheus -l app=sinatra,version=${{ env.IDLE_COLOR }} -o jsonpath='{.items[*].spec.containers[*].image}'
+#           echo ""
+#           echo "Expected image: ${{ secrets.DOCKER_USERNAME }}/sanity:${{ needs.tag-and-release.outputs.version_tag }}"
+#           echo "::endgroup::"
+
+#       - name: Apply sinatra service manifest
+#         run: |
+#          echo "::group::Creating sinatra-service"
+#          kubectl apply -f sinatra-service.yaml -n prometheus
+#          sleep 5  # Allow service to initialize
+    
+#          echo "::group::Service Status"
+#          kubectl get svc sinatra-service -n prometheus -o wide
+#          kubectl describe svc sinatra-service -n prometheus
+#          echo "::endgroup::"
+
+
+
+#       - name: Verify deployed version
+#         run: |
+#          echo "Checking for running pods..."
+#          kubectl get pods -n prometheus -l app=sinatra --show-labels
+
+#          echo "Starting port-forward (using service port 80)..."
+#          kubectl port-forward svc/sinatra-service 8080:80 -n prometheus &
+#          PORT_FORWARD_PID=$!
+#          trap "kill $PORT_FORWARD_PID || true" EXIT
+#          sleep 5
+
+#          echo "::group::Version Verification"
+#          APP_VERSION=""
+#          for i in {1..10}; do
+#          echo "Attempt $i/10 - Testing endpoint..."
+      
+#          # Try JSON first, then fall back to plain text
+#          RESPONSE=$(curl -sf -H "Accept: application/json" http://localhost:8080/version || curl -sf http://localhost:8080/version || echo "")
+#          APP_VERSION=$(echo "$RESPONSE" | jq -r '.version' 2>/dev/null || echo "$RESPONSE")
+      
+#          if [ -n "$APP_VERSION" ]; then
+#          break
+#          fi
+      
+#          echo "Attempt failed, retrying..."
+#          sleep 3
+#          done
+
+#          WORKFLOW_VERSION="${{ needs.tag-and-release.outputs.version_tag }}"
+#          echo "Application reports version: '$APP_VERSION'"
+#          echo "Workflow version: '$WORKFLOW_VERSION'"
+
+#          if [ -z "$APP_VERSION" ]; then
+#          echo "::error::Failed to get version from application after 10 attempts"
+#          echo "::group::Debugging Information"
+#          echo "Current endpoints:"
+#          kubectl get endpoints sinatra-service -n prometheus -o wide
+#          echo "Pod details:"
+#          kubectl get pods -n prometheus -l app=sinatra -o wide
+#          echo "Service details:"
+#          kubectl get svc sinatra-service -n prometheus -o wide
+#          echo "Application logs:"
+#          kubectl logs -n prometheus -l app=sinatra --tail=50
+#          echo "Testing endpoint directly:"
+#          curl -v http://localhost:8080/version || true
+#          echo "::endgroup::"
+#          exit 1
+#          elif [ "$APP_VERSION" != "$WORKFLOW_VERSION" ]; then
+#          echo "::error::Version mismatch! Application reports '$APP_VERSION' but workflow expects '$WORKFLOW_VERSION'"
+#          exit 1
+#          else
+#          echo "Version matches!"
+#          fi
+#          echo "::endgroup::"
+
+
+
+
+#       - name: Switch service to idle deployment
+#         env:
+#          IDLE_COLOR: ${{ env.IDLE_COLOR }}
+#         run: |
+#          echo "Switching service to $IDLE_COLOR deployment"
+#          kubectl patch svc sinatra-service -n prometheus -p \
+#          "{\"spec\": {\"selector\": {\"app\": \"sinatra\", \"version\": \"${IDLE_COLOR}\"}}}"
+    
+#          echo "::group::Service Status After Switch"
+#          kubectl get svc sinatra-service -n prometheus -o jsonpath='{.spec.selector}' | jq
+#          echo "::endgroup::"
+#          sleep 3  # Allow service to update endpoints
+
+
+
+#       - name: Verify traffic routing
+#         run: |
+#          echo "::group::Current Endpoints"
+#          kubectl get endpoints sinatra-service -n prometheus -o wide
+#          echo "::endgroup::"
+    
+#          echo "Starting port-forward for final verification..."
+#          kubectl port-forward svc/sinatra-service 8080:80 -n prometheus &
+#          PORT_FORWARD_PID=$!
+#           trap "kill $PORT_FORWARD_PID || true" EXIT
+#           sleep 5
+    
+#          echo "::group::Final Version Verification"
+#          APP_VERSION=$(curl -s http://localhost:8080/version | jq -r '.version')
+#          EXPECTED_VERSION="${{ needs.tag-and-release.outputs.version_tag }}"
+    
+#          echo "Application version: $APP_VERSION"
+#          echo "Expected version: $EXPECTED_VERSION"
+    
+#          if [ "$APP_VERSION" != "$EXPECTED_VERSION" ]; then
+#          echo "::error::Version mismatch!"
+#          exit 1
+#          fi
+#          echo "::endgroup::"
+
+
+
+#       - name: Cleanup old deployment (optional)
+#         if: env.ACTIVE_COLOR != 'none'
+#         run: |
+#          echo "Deleting old ${{ env.ACTIVE_COLOR }} deployment"
+#          kubectl delete deployment sinatra-${{ env.ACTIVE_COLOR }} -n prometheus
+    
+#          echo "::group::Remaining Deployments"
+#          kubectl get deployments -n prometheus
+#          echo "::endgroup::"
+
+
+
+
+#   # rollback:
+#   #   if: failure()
+#   #   needs: [minikube]
+#   #   runs-on: ubuntu-latest
+#   #   steps:
+#   #     - name: Start Minikube
+#   #       uses: hiberbee/github-action-minikube@latest
+      
+#   #     - name: Check for existing deployments
+#   #       id: check_deployments
+#   #       run: |
+#   #         echo "::group::Current Deployment State"
+#   #         kubectl get deployments -n prometheus --show-labels
+#   #         echo "::endgroup::"
+          
+#   #         # Get all deployments sorted by creation timestamp
+#   #         DEPLOYMENTS_JSON=$(kubectl get deployments -n prometheus -l app=sinatra --sort-by='{.metadata.creationTimestamp}' -o json)
+          
+#   #         # Count deployments and initialize variables
+#   #         DEPLOYMENT_COUNT=$(echo "$DEPLOYMENTS_JSON" | jq '.items | length')
+#   #         echo "deployment_count=${DEPLOYMENT_COUNT}" >> $GITHUB_OUTPUT
+          
+#   #         # Get versions if deployments exist
+#   #         if [ "$DEPLOYMENT_COUNT" -gt 0 ]; then
+#   #           echo "new_deployment=$(echo "$DEPLOYMENTS_JSON" | jq -r '.items[-1].metadata.labels.version')" >> $GITHUB_OUTPUT
+#   #           echo "new_deployment_name=sinatra-$(echo "$DEPLOYMENTS_JSON" | jq -r '.items[-1].metadata.labels.version')" >> $GITHUB_OUTPUT
+            
+#   #           if [ "$DEPLOYMENT_COUNT" -gt 1 ]; then
+#   #             echo "previous_active=$(echo "$DEPLOYMENTS_JSON" | jq -r '.items[-2].metadata.labels.version')" >> $GITHUB_OUTPUT
+#   #             echo "has_previous_deployment=true" >> $GITHUB_OUTPUT
+#   #           else
+#   #             echo "has_previous_deployment=false" >> $GITHUB_OUTPUT
+#   #           fi
+#   #         else
+#   #           echo "has_previous_deployment=false" >> $GITHUB_OUTPUT
+#   #         fi
+      
+#   #     - name: Perform rollback
+#   #       id: rollback
+#   #       run: |
+#   #         echo "::group::Rollback Process"
+#   #         ROLLBACK_STATUS="no_previous"
+          
+#   #         # Clean up failed deployment if exists
+#   #         if [ "${{ steps.check_deployments.outputs.deployment_count }}" -gt 0 ]; then
+#   #           echo "Removing failed deployment: ${{ steps.check_deployments.outputs.new_deployment_name }}"
+#   #           kubectl delete deployment ${{ steps.check_deployments.outputs.new_deployment_name }} -n prometheus --ignore-not-found=true
+            
+#   #           # Attempt rollback if previous version exists
+#   #           if [ "${{ steps.check_deployments.outputs.has_previous_deployment }}" == "true" ]; then
+#   #             echo "Rolling back to version: ${{ steps.check_deployments.outputs.previous_active }}"
+#   #             kubectl patch svc sinatra-service -n prometheus \
+#   #               -p "{\"spec\": {\"selector\": {\"version\": \"${{ steps.check_deployments.outputs.previous_active }}\"}}}"
+              
+#   #             echo "Verifying service selector:"
+#   #             kubectl get svc sinatra-service -n prometheus -o jsonpath='{.spec.selector}' | jq
+#   #             ROLLBACK_STATUS="success"
+#   #           fi
+#   #         else
+#   #           echo "No deployments found to roll back from"
+#   #         fi
+          
+#   #         echo "rollback_status=${ROLLBACK_STATUS}" >> $GITHUB_OUTPUT
+#   #         echo "::endgroup::"
+      
+#   #     - name: Verify rollback
+#   #       if: steps.rollback.outputs.rollback_status == 'success'
+#   #       run: |
+#   #         echo "::group::Rollback Verification"
+#   #         echo "Starting port-forward for verification..."
+          
+#   #         # Start port-forward in background
+#   #         kubectl port-forward svc/sinatra-service 8080:80 -n prometheus > /dev/null 2>&1 &
+#   #         PORT_FORWARD_PID=$!
+#   #         sleep 5
+          
+#   #         # Check health endpoint
+#   #         MAX_RETRIES=3
+#   #         RETRY_DELAY=2
+#   #         STATUS_CODE=000
+          
+#   #         for i in $(seq 1 $MAX_RETRIES); do
+#   #           STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health)
+#   #           [ "$STATUS_CODE" -eq 200 ] && break
+#   #           sleep $RETRY_DELAY
+#   #         done
+          
+#   #         kill $PORT_FORWARD_PID || true
+          
+#   #         if [ "$STATUS_CODE" -ne 200 ]; then
+#   #           echo "::error::Health check failed (Status: $STATUS_CODE)"
+#   #           exit 1
+#   #         fi
+          
+#   #         echo "Rollback verification successful"
+#   #         echo "::endgroup::"
+      
+#   #     - name: Handle rollback failure
+#   #       if: steps.rollback.outputs.rollback_status != 'success'
+#   #       run: |
+#   #         echo "::group::Rollback Status"
+#   #         case "${{ steps.rollback.outputs.rollback_status }}" in
+#   #           "no_previous")
+#   #             echo "::error::No previous deployment available for rollback"
+#   #             ;;
+#   #           *)
+#   #             echo "::error::Rollback failed unexpectedly"
+#   #             ;;
+#   #         esac
+#   #         echo "::endgroup::"
+          
+#   #         if [ "${{ inputs.critical-failure }}" == "true" ]; then
+#   #           exit 1
+#   #         fi
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 name: CI/CD Pipeline with Verified Blue-Green Deployment
 
 on:
@@ -590,65 +1071,56 @@ jobs:
           kubectl cluster-info
           kubectl get nodes
 
-
-
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
+
       - name: Build and push Docker image
         env:
-         VERSION: ${{ needs.tag-and-release.outputs.version_tag }}
+          VERSION: ${{ needs.tag-and-release.outputs.version_tag }}
         run: |
-         docker build \
-         --no-cache \
-         --build-arg APP_VERSION=$VERSION \
-         -t ${{ secrets.DOCKER_USERNAME }}/sanity:$VERSION .
-         docker push ${{ secrets.DOCKER_USERNAME }}/sanity:$VERSION
-
-
+          docker build \
+            --no-cache \
+            --build-arg APP_VERSION=$VERSION \
+            -t ${{ secrets.DOCKER_USERNAME }}/sanity:$VERSION .
+          docker push ${{ secrets.DOCKER_USERNAME }}/sanity:$VERSION
 
       - name: Ensure prometheus namespace exists
         run: |
           kubectl create namespace prometheus --dry-run=client -o yaml | kubectl apply -f -
 
-
-
-
       - name: Deploy Prometheus
         run: |
-           # First, apply the ConfigMap
-            kubectl apply -f prometheus-configmap.yaml -n prometheus
-    
-            # Verify ConfigMap exists
-           echo "::group::Verify ConfigMap"
-           kubectl get configmap prometheus-server-config -n prometheus -o yaml
-           echo "::endgroup::"
-    
-           # Now apply the Deployment
-           kubectl apply -f prometheus-deployment.yaml -n prometheus
-    
-           echo "::group::Debug: Show Prometheus resources"
-           kubectl get deployment,svc,pods,configmap -n prometheus -o wide
-           kubectl describe deployment prometheus-server -n prometheus
-           echo "::endgroup::"
-    
-           echo "Waiting for Prometheus to be ready (timeout: 5 minutes)..."
-           if ! kubectl wait --for=condition=available deployment/prometheus-server \
-           --timeout=300s -n prometheus; then
-        
-           echo "::error::Prometheus deployment timed out"
-           echo "::group::Debug: Pod logs and events"
-           kubectl get events -n prometheus --sort-by='.lastTimestamp'
-           kubectl describe pod -n prometheus -l app=prometheus
-           kubectl logs -n prometheus -l app=prometheus --all-containers=true --tail=50
+          # First, apply the ConfigMap
+          kubectl apply -f prometheus-configmap.yaml -n prometheus
+          
+          # Verify ConfigMap exists
+          echo "::group::Verify ConfigMap"
+          kubectl get configmap prometheus-server-config -n prometheus -o yaml
+          echo "::endgroup::"
+          
+          # Now apply the Deployment
+          kubectl apply -f prometheus-deployment.yaml -n prometheus
+          
+          echo "::group::Debug: Show Prometheus resources"
+          kubectl get deployment,svc,pods,configmap -n prometheus -o wide
+          kubectl describe deployment prometheus-server -n prometheus
+          echo "::endgroup::"
+          
+          echo "Waiting for Prometheus to be ready (timeout: 5 minutes)..."
+          if ! kubectl wait --for=condition=available deployment/prometheus-server \
+            --timeout=300s -n prometheus; then
+            echo "::error::Prometheus deployment timed out"
+            echo "::group::Debug: Pod logs and events"
+            kubectl get events -n prometheus --sort-by='.lastTimestamp'
+            kubectl describe pod -n prometheus -l app=prometheus
+            kubectl logs -n prometheus -l app=prometheus --all-containers=true --tail=50
             echo "::endgroup::"
-           exit 1
-           fi
-           echo "Prometheus is ready"
-
-
+            exit 1
+          fi
+          echo "Prometheus is ready"
 
       - name: Determine active and idle colors
         id: color_switch
@@ -724,382 +1196,241 @@ jobs:
 
       - name: Apply sinatra service manifest
         run: |
-         echo "::group::Creating sinatra-service"
-         kubectl apply -f sinatra-service.yaml -n prometheus
-         sleep 5  # Allow service to initialize
-    
-         echo "::group::Service Status"
-         kubectl get svc sinatra-service -n prometheus -o wide
-         kubectl describe svc sinatra-service -n prometheus
-         echo "::endgroup::"
-
-
+          echo "::group::Creating sinatra-service"
+          kubectl apply -f sinatra-service.yaml -n prometheus
+          sleep 5  # Allow service to initialize
+          
+          echo "::group::Service Status"
+          kubectl get svc sinatra-service -n prometheus -o wide
+          kubectl describe svc sinatra-service -n prometheus
+          echo "::endgroup::"
 
       - name: Verify deployed version
         run: |
-         echo "Checking for running pods..."
-         kubectl get pods -n prometheus -l app=sinatra --show-labels
+          echo "Checking for running pods..."
+          kubectl get pods -n prometheus -l app=sinatra --show-labels
 
-         echo "Starting port-forward (using service port 80)..."
-         kubectl port-forward svc/sinatra-service 8080:80 -n prometheus &
-         PORT_FORWARD_PID=$!
-         trap "kill $PORT_FORWARD_PID || true" EXIT
-         sleep 5
+          echo "Starting port-forward (using service port 80)..."
+          kubectl port-forward svc/sinatra-service 8080:80 -n prometheus &
+          PORT_FORWARD_PID=$!
+          trap "kill $PORT_FORWARD_PID || true" EXIT
+          sleep 5
 
-         echo "::group::Version Verification"
-         APP_VERSION=""
-         for i in {1..10}; do
-         echo "Attempt $i/10 - Testing endpoint..."
-      
-         # Try JSON first, then fall back to plain text
-         RESPONSE=$(curl -sf -H "Accept: application/json" http://localhost:8080/version || curl -sf http://localhost:8080/version || echo "")
-         APP_VERSION=$(echo "$RESPONSE" | jq -r '.version' 2>/dev/null || echo "$RESPONSE")
-      
-         if [ -n "$APP_VERSION" ]; then
-         break
-         fi
-      
-         echo "Attempt failed, retrying..."
-         sleep 3
-         done
+          echo "::group::Version Verification"
+          APP_VERSION=""
+          for i in {1..10}; do
+            echo "Attempt $i/10 - Testing endpoint..."
+            
+            # Try JSON first, then fall back to plain text
+            RESPONSE=$(curl -sf -H "Accept: application/json" http://localhost:8080/version || curl -sf http://localhost:8080/version || echo "")
+            APP_VERSION=$(echo "$RESPONSE" | jq -r '.version' 2>/dev/null || echo "$RESPONSE")
+            
+            if [ -n "$APP_VERSION" ]; then
+              break
+            fi
+            
+            echo "Attempt failed, retrying..."
+            sleep 3
+          done
 
-         WORKFLOW_VERSION="${{ needs.tag-and-release.outputs.version_tag }}"
-         echo "Application reports version: '$APP_VERSION'"
-         echo "Workflow version: '$WORKFLOW_VERSION'"
+          WORKFLOW_VERSION="${{ needs.tag-and-release.outputs.version_tag }}"
+          echo "Application reports version: '$APP_VERSION'"
+          echo "Workflow version: '$WORKFLOW_VERSION'"
 
-         if [ -z "$APP_VERSION" ]; then
-         echo "::error::Failed to get version from application after 10 attempts"
-         echo "::group::Debugging Information"
-         echo "Current endpoints:"
-         kubectl get endpoints sinatra-service -n prometheus -o wide
-         echo "Pod details:"
-         kubectl get pods -n prometheus -l app=sinatra -o wide
-         echo "Service details:"
-         kubectl get svc sinatra-service -n prometheus -o wide
-         echo "Application logs:"
-         kubectl logs -n prometheus -l app=sinatra --tail=50
-         echo "Testing endpoint directly:"
-         curl -v http://localhost:8080/version || true
-         echo "::endgroup::"
-         exit 1
-         elif [ "$APP_VERSION" != "$WORKFLOW_VERSION" ]; then
-         echo "::error::Version mismatch! Application reports '$APP_VERSION' but workflow expects '$WORKFLOW_VERSION'"
-         exit 1
-         else
-         echo "Version matches!"
-         fi
-         echo "::endgroup::"
-
-
-
+          if [ -z "$APP_VERSION" ]; then
+            echo "::error::Failed to get version from application after 10 attempts"
+            echo "::group::Debugging Information"
+            echo "Current endpoints:"
+            kubectl get endpoints sinatra-service -n prometheus -o wide
+            echo "Pod details:"
+            kubectl get pods -n prometheus -l app=sinatra -o wide
+            echo "Service details:"
+            kubectl get svc sinatra-service -n prometheus -o wide
+            echo "Application logs:"
+            kubectl logs -n prometheus -l app=sinatra --tail=50
+            echo "Testing endpoint directly:"
+            curl -v http://localhost:8080/version || true
+            echo "::endgroup::"
+            exit 1
+          elif [ "$APP_VERSION" != "$WORKFLOW_VERSION" ]; then
+            echo "::error::Version mismatch! Application reports '$APP_VERSION' but workflow expects '$WORKFLOW_VERSION'"
+            exit 1
+          else
+            echo "Version matches!"
+          fi
+          echo "::endgroup::"
 
       - name: Switch service to idle deployment
         env:
-         IDLE_COLOR: ${{ env.IDLE_COLOR }}
+          IDLE_COLOR: ${{ env.IDLE_COLOR }}
         run: |
-         echo "Switching service to $IDLE_COLOR deployment"
-         kubectl patch svc sinatra-service -n prometheus -p \
-         "{\"spec\": {\"selector\": {\"app\": \"sinatra\", \"version\": \"${IDLE_COLOR}\"}}}"
-    
-         echo "::group::Service Status After Switch"
-         kubectl get svc sinatra-service -n prometheus -o jsonpath='{.spec.selector}' | jq
-         echo "::endgroup::"
-         sleep 3  # Allow service to update endpoints
-
-
+          echo "Switching service to $IDLE_COLOR deployment"
+          kubectl patch svc sinatra-service -n prometheus -p \
+            "{\"spec\": {\"selector\": {\"app\": \"sinatra\", \"version\": \"${IDLE_COLOR}\"}}}"
+          
+          echo "::group::Service Status After Switch"
+          kubectl get svc sinatra-service -n prometheus -o jsonpath='{.spec.selector}' | jq
+          echo "::endgroup::"
+          sleep 3  # Allow service to update endpoints
 
       - name: Verify traffic routing
         run: |
-         echo "::group::Current Endpoints"
-         kubectl get endpoints sinatra-service -n prometheus -o wide
-         echo "::endgroup::"
-    
-         echo "Starting port-forward for final verification..."
-         kubectl port-forward svc/sinatra-service 8080:80 -n prometheus &
-         PORT_FORWARD_PID=$!
+          echo "::group::Current Endpoints"
+          kubectl get endpoints sinatra-service -n prometheus -o wide
+          echo "::endgroup::"
+          
+          echo "Starting port-forward for final verification..."
+          kubectl port-forward svc/sinatra-service 8080:80 -n prometheus &
+          PORT_FORWARD_PID=$!
           trap "kill $PORT_FORWARD_PID || true" EXIT
           sleep 5
-    
-         echo "::group::Final Version Verification"
-         APP_VERSION=$(curl -s http://localhost:8080/version | jq -r '.version')
-         EXPECTED_VERSION="${{ needs.tag-and-release.outputs.version_tag }}"
-    
-         echo "Application version: $APP_VERSION"
-         echo "Expected version: $EXPECTED_VERSION"
-    
-         if [ "$APP_VERSION" != "$EXPECTED_VERSION" ]; then
-         echo "::error::Version mismatch!"
-         exit 1
-         fi
-         echo "::endgroup::"
-
-
+          
+          echo "::group::Final Version Verification"
+          APP_VERSION=$(curl -s http://localhost:8080/version | jq -r '.version')
+          EXPECTED_VERSION="${{ needs.tag-and-release.outputs.version_tag }}"
+          
+          echo "Application version: $APP_VERSION"
+          echo "Expected version: $EXPECTED_VERSION"
+          
+          if [ "$APP_VERSION" != "$EXPECTED_VERSION" ]; then
+            echo "::error::Version mismatch!"
+            exit 1
+          fi
+          echo "::endgroup::"
 
       - name: Cleanup old deployment (optional)
         if: env.ACTIVE_COLOR != 'none'
         run: |
-         echo "Deleting old ${{ env.ACTIVE_COLOR }} deployment"
-         kubectl delete deployment sinatra-${{ env.ACTIVE_COLOR }} -n prometheus
-    
-         echo "::group::Remaining Deployments"
-         kubectl get deployments -n prometheus
-         echo "::endgroup::"
-
-
-
-
-  # rollback:
-  #   if: failure()
-  #   needs: [minikube]
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - name: Start Minikube
-  #       uses: hiberbee/github-action-minikube@latest
-      
-  #     - name: Check for existing deployments
-  #       id: check_deployments
-  #       run: |
-  #         echo "::group::Current Deployment State"
-  #         kubectl get deployments -n prometheus --show-labels
-  #         echo "::endgroup::"
+          echo "Deleting old ${{ env.ACTIVE_COLOR }} deployment"
+          kubectl delete deployment sinatra-${{ env.ACTIVE_COLOR }} -n prometheus
           
-  #         # Get all deployments sorted by creation timestamp
-  #         DEPLOYMENTS_JSON=$(kubectl get deployments -n prometheus -l app=sinatra --sort-by='{.metadata.creationTimestamp}' -o json)
-          
-  #         # Count deployments and initialize variables
-  #         DEPLOYMENT_COUNT=$(echo "$DEPLOYMENTS_JSON" | jq '.items | length')
-  #         echo "deployment_count=${DEPLOYMENT_COUNT}" >> $GITHUB_OUTPUT
-          
-  #         # Get versions if deployments exist
-  #         if [ "$DEPLOYMENT_COUNT" -gt 0 ]; then
-  #           echo "new_deployment=$(echo "$DEPLOYMENTS_JSON" | jq -r '.items[-1].metadata.labels.version')" >> $GITHUB_OUTPUT
-  #           echo "new_deployment_name=sinatra-$(echo "$DEPLOYMENTS_JSON" | jq -r '.items[-1].metadata.labels.version')" >> $GITHUB_OUTPUT
-            
-  #           if [ "$DEPLOYMENT_COUNT" -gt 1 ]; then
-  #             echo "previous_active=$(echo "$DEPLOYMENTS_JSON" | jq -r '.items[-2].metadata.labels.version')" >> $GITHUB_OUTPUT
-  #             echo "has_previous_deployment=true" >> $GITHUB_OUTPUT
-  #           else
-  #             echo "has_previous_deployment=false" >> $GITHUB_OUTPUT
-  #           fi
-  #         else
-  #           echo "has_previous_deployment=false" >> $GITHUB_OUTPUT
-  #         fi
-      
-  #     - name: Perform rollback
-  #       id: rollback
-  #       run: |
-  #         echo "::group::Rollback Process"
-  #         ROLLBACK_STATUS="no_previous"
-          
-  #         # Clean up failed deployment if exists
-  #         if [ "${{ steps.check_deployments.outputs.deployment_count }}" -gt 0 ]; then
-  #           echo "Removing failed deployment: ${{ steps.check_deployments.outputs.new_deployment_name }}"
-  #           kubectl delete deployment ${{ steps.check_deployments.outputs.new_deployment_name }} -n prometheus --ignore-not-found=true
-            
-  #           # Attempt rollback if previous version exists
-  #           if [ "${{ steps.check_deployments.outputs.has_previous_deployment }}" == "true" ]; then
-  #             echo "Rolling back to version: ${{ steps.check_deployments.outputs.previous_active }}"
-  #             kubectl patch svc sinatra-service -n prometheus \
-  #               -p "{\"spec\": {\"selector\": {\"version\": \"${{ steps.check_deployments.outputs.previous_active }}\"}}}"
-              
-  #             echo "Verifying service selector:"
-  #             kubectl get svc sinatra-service -n prometheus -o jsonpath='{.spec.selector}' | jq
-  #             ROLLBACK_STATUS="success"
-  #           fi
-  #         else
-  #           echo "No deployments found to roll back from"
-  #         fi
-          
-  #         echo "rollback_status=${ROLLBACK_STATUS}" >> $GITHUB_OUTPUT
-  #         echo "::endgroup::"
-      
-  #     - name: Verify rollback
-  #       if: steps.rollback.outputs.rollback_status == 'success'
-  #       run: |
-  #         echo "::group::Rollback Verification"
-  #         echo "Starting port-forward for verification..."
-          
-  #         # Start port-forward in background
-  #         kubectl port-forward svc/sinatra-service 8080:80 -n prometheus > /dev/null 2>&1 &
-  #         PORT_FORWARD_PID=$!
-  #         sleep 5
-          
-  #         # Check health endpoint
-  #         MAX_RETRIES=3
-  #         RETRY_DELAY=2
-  #         STATUS_CODE=000
-          
-  #         for i in $(seq 1 $MAX_RETRIES); do
-  #           STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health)
-  #           [ "$STATUS_CODE" -eq 200 ] && break
-  #           sleep $RETRY_DELAY
-  #         done
-          
-  #         kill $PORT_FORWARD_PID || true
-          
-  #         if [ "$STATUS_CODE" -ne 200 ]; then
-  #           echo "::error::Health check failed (Status: $STATUS_CODE)"
-  #           exit 1
-  #         fi
-          
-  #         echo "Rollback verification successful"
-  #         echo "::endgroup::"
-      
-  #     - name: Handle rollback failure
-  #       if: steps.rollback.outputs.rollback_status != 'success'
-  #       run: |
-  #         echo "::group::Rollback Status"
-  #         case "${{ steps.rollback.outputs.rollback_status }}" in
-  #           "no_previous")
-  #             echo "::error::No previous deployment available for rollback"
-  #             ;;
-  #           *)
-  #             echo "::error::Rollback failed unexpectedly"
-  #             ;;
-  #         esac
-  #         echo "::endgroup::"
-          
-  #         if [ "${{ inputs.critical-failure }}" == "true" ]; then
-  #           exit 1
-  #         fi
-
-
-
-
-
-
+          echo "::group::Remaining Deployments"
+          kubectl get deployments -n prometheus
+          echo "::endgroup::"
 
   rollback:
     if: failure()
     needs: [minikube]
     runs-on: ubuntu-latest
     steps:
-    - name: Start Minikube
-      uses: hiberbee/github-action-minikube@latest
-    
-    - name: Ensure prometheus namespace exists
-      run: |
-        kubectl create namespace prometheus --dry-run=client -o yaml | kubectl apply -f -
-        echo "Namespace prometheus created/verified"
-    
-    - name: Debug - Show all cluster resources
-      run: |
-        echo "::group::Cluster State Before Rollback"
-        echo "### Nodes:"
-        kubectl get nodes -o wide
-        echo "### All Namespaces:"
-        kubectl get ns
-        echo "### All Resources in prometheus namespace:"
-        kubectl get all -n prometheus || echo "No resources found in prometheus namespace"
-        echo "::endgroup::"
-    
-    - name: Check for existing deployments
-      id: check_deployments
-      run: |
-        echo "::group::Current Deployment State"
-        # Check if sinatra-service exists
-        if kubectl get svc sinatra-service -n prometheus >/dev/null 2>&1; then
-          echo "sinatra-service exists"
-          CURRENT_VERSION=$(kubectl get svc sinatra-service -n prometheus -o jsonpath='{.spec.selector.version}' 2>/dev/null || echo "none")
-          echo "Current service version: $CURRENT_VERSION"
-        else
-          echo "sinatra-service does not exist"
-          CURRENT_VERSION="none"
-        fi
-        echo "current_version=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
-        
-        # Get all deployments
-        DEPLOYMENTS=$(kubectl get deployments -n prometheus -l app=sinatra --sort-by=.metadata.creationTimestamp -o name 2>/dev/null | cut -d/ -f2 || echo "")
-        echo "All deployments: ${DEPLOYMENTS:-none}"
-        echo "deployments=${DEPLOYMENTS}" >> $GITHUB_OUTPUT
-        
-        # Find previous deployment (not current)
-        PREVIOUS_DEPLOYMENT=""
-        PREVIOUS_VERSION=""
-        for DEPLOYMENT in $DEPLOYMENTS; do
-          DEPLOYMENT_VERSION=$(kubectl get deployment $DEPLOYMENT -n prometheus -o jsonpath='{.metadata.labels.version}')
-          if [ "$DEPLOYMENT_VERSION" != "$CURRENT_VERSION" ]; then
-            PREVIOUS_DEPLOYMENT=$DEPLOYMENT
-            PREVIOUS_VERSION=$DEPLOYMENT_VERSION
-            break
+      - name: Start Minikube
+        uses: hiberbee/github-action-minikube@latest
+      
+      - name: Ensure prometheus namespace exists
+        run: |
+          kubectl create namespace prometheus --dry-run=client -o yaml | kubectl apply -f -
+          echo "Namespace prometheus created/verified"
+      
+      - name: Debug - Show all cluster resources
+        run: |
+          echo "::group::Cluster State Before Rollback"
+          echo "### Nodes:"
+          kubectl get nodes -o wide
+          echo "### All Namespaces:"
+          kubectl get ns
+          echo "### All Resources in prometheus namespace:"
+          kubectl get all -n prometheus || echo "No resources found in prometheus namespace"
+          echo "::endgroup::"
+      
+      - name: Check for existing deployments
+        id: check_deployments
+        run: |
+          echo "::group::Current Deployment State"
+          # Check if sinatra-service exists
+          if kubectl get svc sinatra-service -n prometheus >/dev/null 2>&1; then
+            echo "sinatra-service exists"
+            CURRENT_VERSION=$(kubectl get svc sinatra-service -n prometheus -o jsonpath='{.spec.selector.version}' 2>/dev/null || echo "none")
+            echo "Current service version: $CURRENT_VERSION"
+          else
+            echo "sinatra-service does not exist"
+            CURRENT_VERSION="none"
           fi
-        done
-        
-        echo "Previous deployment: ${PREVIOUS_DEPLOYMENT:-none}"
-        echo "Previous version: ${PREVIOUS_VERSION:-none}"
-        echo "previous_deployment=${PREVIOUS_DEPLOYMENT}" >> $GITHUB_OUTPUT
-        echo "previous_version=${PREVIOUS_VERSION}" >> $GITHUB_OUTPUT
-        
-        if [ -n "$PREVIOUS_DEPLOYMENT" ]; then
-          echo "has_previous_deployment=true" >> $GITHUB_OUTPUT
-        else
-          echo "has_previous_deployment=false" >> $GITHUB_OUTPUT
-        fi
-        echo "::endgroup::"
-    
-    - name: Perform rollback or cleanup
-      id: rollback
-      run: |
-        echo "::group::Rollback Actions"
-        if [ "${{ steps.check_deployments.outputs.has_previous_deployment }}" = "true" ]; then
-          echo "Performing rollback to ${{ steps.check_deployments.outputs.previous_deployment }}"
+          echo "current_version=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
           
-          # Patch service
-          kubectl patch svc sinatra-service -n prometheus \
-            -p "{\"spec\": {\"selector\": {\"version\": \"${{ steps.check_deployments.outputs.previous_version }}\"}}}"
+          # Get all deployments
+          DEPLOYMENTS=$(kubectl get deployments -n prometheus -l app=sinatra --sort-by=.metadata.creationTimestamp -o name 2>/dev/null | cut -d/ -f2 || echo "")
+          echo "All deployments: ${DEPLOYMENTS:-none}"
+          echo "deployments=${DEPLOYMENTS}" >> $GITHUB_OUTPUT
           
-          # Scale deployments
-          if [ "${{ steps.check_deployments.outputs.current_version }}" != "none" ]; then
-            echo "Scaling down current deployment"
-            kubectl scale deployment sinatra-${{ steps.check_deployments.outputs.current_version }} -n prometheus --replicas=0
+          # Find previous deployment (not current)
+          PREVIOUS_DEPLOYMENT=""
+          PREVIOUS_VERSION=""
+          for DEPLOYMENT in $DEPLOYMENTS; do
+            DEPLOYMENT_VERSION=$(kubectl get deployment $DEPLOYMENT -n prometheus -o jsonpath='{.metadata.labels.version}')
+            if [ "$DEPLOYMENT_VERSION" != "$CURRENT_VERSION" ]; then
+              PREVIOUS_DEPLOYMENT=$DEPLOYMENT
+              PREVIOUS_VERSION=$DEPLOYMENT_VERSION
+              break
+            fi
+          done
+          
+          echo "Previous deployment: ${PREVIOUS_DEPLOYMENT:-none}"
+          echo "Previous version: ${PREVIOUS_VERSION:-none}"
+          echo "previous_deployment=${PREVIOUS_DEPLOYMENT}" >> $GITHUB_OUTPUT
+          echo "previous_version=${PREVIOUS_VERSION}" >> $GITHUB_OUTPUT
+          
+          if [ -n "$PREVIOUS_DEPLOYMENT" ]; then
+            echo "has_previous_deployment=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_previous_deployment=false" >> $GITHUB_OUTPUT
           fi
-          
-          echo "Scaling up previous deployment"
-          kubectl scale deployment ${{ steps.check_deployments.outputs.previous_deployment }} -n prometheus --replicas=2
-          
-          echo "rollback_status=success" >> $GITHUB_OUTPUT
-        else
-          echo "::warning::No previous deployment available for rollback"
-          
-          # Clean up any failed resources if they exist
-          echo "Cleaning up any failed resources..."
-          kubectl delete deployment -n prometheus -l app=sinatra --ignore-not-found
-          kubectl delete svc sinatra-service -n prometheus --ignore-not-found
-          
-          echo "rollback_status=cleaned" >> $GITHUB_OUTPUT
-        fi
-        echo "::endgroup::"
-    
-    - name: Show final state
-      run: |
-        echo "::group::Final Cluster State"
-        echo "### Deployments:"
-        kubectl get deployments -n prometheus -o wide || true
-        echo "### Services:"
-        kubectl get svc -n prometheus -o wide || true
-        echo "### Pods:"
-        kubectl get pods -n prometheus -o wide || true
-        echo "::endgroup::"
-    
-    - name: Handle rollback result
-      run: |
-        case "${{ steps.rollback.outputs.rollback_status }}" in
-          "success")
-            echo "::notice::Rollback completed successfully"
-            ;;
-          "cleaned")
-            echo "::notice::No rollback available - cleaned up resources"
-            ;;
-          *)
-            echo "::error::Rollback failed"
-            exit 1
-            ;;
-        esac
-
-
-
-
-  
-  
-  
-  
+          echo "::endgroup::"
+      
+      - name: Perform rollback or cleanup
+        id: rollback
+        run: |
+          echo "::group::Rollback Actions"
+          if [ "${{ steps.check_deployments.outputs.has_previous_deployment }}" = "true" ]; then
+            echo "Performing rollback to ${{ steps.check_deployments.outputs.previous_deployment }}"
+            
+            # Patch service
+            kubectl patch svc sinatra-service -n prometheus \
+              -p "{\"spec\": {\"selector\": {\"version\": \"${{ steps.check_deployments.outputs.previous_version }}\"}}}"
+            
+            # Scale deployments
+            if [ "${{ steps.check_deployments.outputs.current_version }}" != "none" ]; then
+              echo "Scaling down current deployment"
+              kubectl scale deployment sinatra-${{ steps.check_deployments.outputs.current_version }} -n prometheus --replicas=0
+            fi
+            
+            echo "Scaling up previous deployment"
+            kubectl scale deployment ${{ steps.check_deployments.outputs.previous_deployment }} -n prometheus --replicas=2
+            
+            echo "rollback_status=success" >> $GITHUB_OUTPUT
+          else
+            echo "::warning::No previous deployment available for rollback"
+            
+            # Clean up any failed resources if they exist
+            echo "Cleaning up any failed resources..."
+            kubectl delete deployment -n prometheus -l app=sinatra --ignore-not-found
+            kubectl delete svc sinatra-service -n prometheus --ignore-not-found
+            
+            echo "rollback_status=cleaned" >> $GITHUB_OUTPUT
+          fi
+          echo "::endgroup::"
+      
+      - name: Show final state
+        run: |
+          echo "::group::Final Cluster State"
+          echo "### Deployments:"
+          kubectl get deployments -n prometheus -o wide || true
+          echo "### Services:"
+          kubectl get svc -n prometheus -o wide || true
+          echo "### Pods:"
+          kubectl get pods -n prometheus -o wide || true
+          echo "::endgroup::"
+      
+      - name: Handle rollback result
+        run: |
+          case "${{ steps.rollback.outputs.rollback_status }}" in
+            "success")
+              echo "::notice::Rollback completed successfully"
+              ;;
+            "cleaned")
+              echo "::notice::No rollback available - cleaned up resources"
+              ;;
+            *)
+              echo "::error::Rollback failed"
+              exit 1
+              ;;
+          esac
