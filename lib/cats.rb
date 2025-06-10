@@ -89,11 +89,11 @@ module Cats
       use Rack::CommonLogger, $stdout
     end
 
-    # # Health endpoint for Kubernetes
-    # get '/health' do
-    #   status 200
-    #   'OK'
-    # end
+    # Health endpoint for Kubernetes
+    get '/health' do
+      status 200
+      'OK'
+    end
 
     # Version endpoint that responds to both JSON and plain text
     get '/version' do

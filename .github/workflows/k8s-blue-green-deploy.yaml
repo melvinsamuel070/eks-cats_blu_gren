@@ -590,6 +590,8 @@ jobs:
           kubectl cluster-info
           kubectl get nodes
 
+
+
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
@@ -605,9 +607,14 @@ jobs:
          -t ${{ secrets.DOCKER_USERNAME }}/sanity:$VERSION .
          docker push ${{ secrets.DOCKER_USERNAME }}/sanity:$VERSION
 
+
+
       - name: Ensure prometheus namespace exists
         run: |
           kubectl create namespace prometheus --dry-run=client -o yaml | kubectl apply -f -
+
+
+
 
       - name: Deploy Prometheus
         run: |
@@ -640,6 +647,9 @@ jobs:
            exit 1
            fi
            echo "Prometheus is ready"
+
+
+
       - name: Determine active and idle colors
         id: color_switch
         run: |
@@ -723,6 +733,8 @@ jobs:
          kubectl describe svc sinatra-service -n prometheus
          echo "::endgroup::"
 
+
+
       - name: Verify deployed version
         run: |
          echo "Checking for running pods..."
@@ -778,6 +790,9 @@ jobs:
          fi
          echo "::endgroup::"
 
+
+
+
       - name: Switch service to idle deployment
         env:
          IDLE_COLOR: ${{ env.IDLE_COLOR }}
@@ -790,6 +805,8 @@ jobs:
          kubectl get svc sinatra-service -n prometheus -o jsonpath='{.spec.selector}' | jq
          echo "::endgroup::"
          sleep 3  # Allow service to update endpoints
+
+
 
       - name: Verify traffic routing
         run: |
@@ -816,6 +833,8 @@ jobs:
          fi
          echo "::endgroup::"
 
+
+
       - name: Cleanup old deployment (optional)
         if: env.ACTIVE_COLOR != 'none'
         run: |
@@ -825,6 +844,9 @@ jobs:
          echo "::group::Remaining Deployments"
          kubectl get deployments -n prometheus
          echo "::endgroup::"
+
+
+
 
   rollback:
     if: failure()
