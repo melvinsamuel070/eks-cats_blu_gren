@@ -848,117 +848,244 @@ jobs:
 
 
 
+  # rollback:
+  #   if: failure()
+  #   needs: [minikube]
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Start Minikube
+  #       uses: hiberbee/github-action-minikube@latest
+      
+  #     - name: Check for existing deployments
+  #       id: check_deployments
+  #       run: |
+  #         echo "::group::Current Deployment State"
+  #         kubectl get deployments -n prometheus --show-labels
+  #         echo "::endgroup::"
+          
+  #         # Get all deployments sorted by creation timestamp
+  #         DEPLOYMENTS_JSON=$(kubectl get deployments -n prometheus -l app=sinatra --sort-by='{.metadata.creationTimestamp}' -o json)
+          
+  #         # Count deployments and initialize variables
+  #         DEPLOYMENT_COUNT=$(echo "$DEPLOYMENTS_JSON" | jq '.items | length')
+  #         echo "deployment_count=${DEPLOYMENT_COUNT}" >> $GITHUB_OUTPUT
+          
+  #         # Get versions if deployments exist
+  #         if [ "$DEPLOYMENT_COUNT" -gt 0 ]; then
+  #           echo "new_deployment=$(echo "$DEPLOYMENTS_JSON" | jq -r '.items[-1].metadata.labels.version')" >> $GITHUB_OUTPUT
+  #           echo "new_deployment_name=sinatra-$(echo "$DEPLOYMENTS_JSON" | jq -r '.items[-1].metadata.labels.version')" >> $GITHUB_OUTPUT
+            
+  #           if [ "$DEPLOYMENT_COUNT" -gt 1 ]; then
+  #             echo "previous_active=$(echo "$DEPLOYMENTS_JSON" | jq -r '.items[-2].metadata.labels.version')" >> $GITHUB_OUTPUT
+  #             echo "has_previous_deployment=true" >> $GITHUB_OUTPUT
+  #           else
+  #             echo "has_previous_deployment=false" >> $GITHUB_OUTPUT
+  #           fi
+  #         else
+  #           echo "has_previous_deployment=false" >> $GITHUB_OUTPUT
+  #         fi
+      
+  #     - name: Perform rollback
+  #       id: rollback
+  #       run: |
+  #         echo "::group::Rollback Process"
+  #         ROLLBACK_STATUS="no_previous"
+          
+  #         # Clean up failed deployment if exists
+  #         if [ "${{ steps.check_deployments.outputs.deployment_count }}" -gt 0 ]; then
+  #           echo "Removing failed deployment: ${{ steps.check_deployments.outputs.new_deployment_name }}"
+  #           kubectl delete deployment ${{ steps.check_deployments.outputs.new_deployment_name }} -n prometheus --ignore-not-found=true
+            
+  #           # Attempt rollback if previous version exists
+  #           if [ "${{ steps.check_deployments.outputs.has_previous_deployment }}" == "true" ]; then
+  #             echo "Rolling back to version: ${{ steps.check_deployments.outputs.previous_active }}"
+  #             kubectl patch svc sinatra-service -n prometheus \
+  #               -p "{\"spec\": {\"selector\": {\"version\": \"${{ steps.check_deployments.outputs.previous_active }}\"}}}"
+              
+  #             echo "Verifying service selector:"
+  #             kubectl get svc sinatra-service -n prometheus -o jsonpath='{.spec.selector}' | jq
+  #             ROLLBACK_STATUS="success"
+  #           fi
+  #         else
+  #           echo "No deployments found to roll back from"
+  #         fi
+          
+  #         echo "rollback_status=${ROLLBACK_STATUS}" >> $GITHUB_OUTPUT
+  #         echo "::endgroup::"
+      
+  #     - name: Verify rollback
+  #       if: steps.rollback.outputs.rollback_status == 'success'
+  #       run: |
+  #         echo "::group::Rollback Verification"
+  #         echo "Starting port-forward for verification..."
+          
+  #         # Start port-forward in background
+  #         kubectl port-forward svc/sinatra-service 8080:80 -n prometheus > /dev/null 2>&1 &
+  #         PORT_FORWARD_PID=$!
+  #         sleep 5
+          
+  #         # Check health endpoint
+  #         MAX_RETRIES=3
+  #         RETRY_DELAY=2
+  #         STATUS_CODE=000
+          
+  #         for i in $(seq 1 $MAX_RETRIES); do
+  #           STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health)
+  #           [ "$STATUS_CODE" -eq 200 ] && break
+  #           sleep $RETRY_DELAY
+  #         done
+          
+  #         kill $PORT_FORWARD_PID || true
+          
+  #         if [ "$STATUS_CODE" -ne 200 ]; then
+  #           echo "::error::Health check failed (Status: $STATUS_CODE)"
+  #           exit 1
+  #         fi
+          
+  #         echo "Rollback verification successful"
+  #         echo "::endgroup::"
+      
+  #     - name: Handle rollback failure
+  #       if: steps.rollback.outputs.rollback_status != 'success'
+  #       run: |
+  #         echo "::group::Rollback Status"
+  #         case "${{ steps.rollback.outputs.rollback_status }}" in
+  #           "no_previous")
+  #             echo "::error::No previous deployment available for rollback"
+  #             ;;
+  #           *)
+  #             echo "::error::Rollback failed unexpectedly"
+  #             ;;
+  #         esac
+  #         echo "::endgroup::"
+          
+  #         if [ "${{ inputs.critical-failure }}" == "true" ]; then
+  #           exit 1
+  #         fi
+
+
+
+
+
+
+
+
+
+
+
+
   rollback:
     if: failure()
     needs: [minikube]
     runs-on: ubuntu-latest
     steps:
-      - name: Start Minikube
-        uses: hiberbee/github-action-minikube@latest
-      
-      - name: Check for existing deployments
-        id: check_deployments
-        run: |
-          echo "::group::Current Deployment State"
-          kubectl get deployments -n prometheus --show-labels
-          echo "::endgroup::"
-          
-          # Get all deployments sorted by creation timestamp
-          DEPLOYMENTS_JSON=$(kubectl get deployments -n prometheus -l app=sinatra --sort-by='{.metadata.creationTimestamp}' -o json)
-          
-          # Count deployments and initialize variables
-          DEPLOYMENT_COUNT=$(echo "$DEPLOYMENTS_JSON" | jq '.items | length')
-          echo "deployment_count=${DEPLOYMENT_COUNT}" >> $GITHUB_OUTPUT
-          
-          # Get versions if deployments exist
-          if [ "$DEPLOYMENT_COUNT" -gt 0 ]; then
-            echo "new_deployment=$(echo "$DEPLOYMENTS_JSON" | jq -r '.items[-1].metadata.labels.version')" >> $GITHUB_OUTPUT
-            echo "new_deployment_name=sinatra-$(echo "$DEPLOYMENTS_JSON" | jq -r '.items[-1].metadata.labels.version')" >> $GITHUB_OUTPUT
-            
-            if [ "$DEPLOYMENT_COUNT" -gt 1 ]; then
-              echo "previous_active=$(echo "$DEPLOYMENTS_JSON" | jq -r '.items[-2].metadata.labels.version')" >> $GITHUB_OUTPUT
-              echo "has_previous_deployment=true" >> $GITHUB_OUTPUT
-            else
-              echo "has_previous_deployment=false" >> $GITHUB_OUTPUT
-            fi
-          else
-            echo "has_previous_deployment=false" >> $GITHUB_OUTPUT
+    - name: Start Minikube
+      uses: hiberbee/github-action-minikube@latest
+    
+    - name: Check for existing deployments
+      id: check_deployments
+      run: |
+        echo "::group::Current Deployment State"
+        kubectl get deployments -n prometheus -l app=sinatra --show-labels
+        kubectl get svc sinatra-service -n prometheus -o wide
+        echo "::endgroup::"
+        
+        # Get current service selector
+        CURRENT_VERSION=$(kubectl get svc sinatra-service -n prometheus -o jsonpath='{.spec.selector.version}' 2>/dev/null || echo "")
+        echo "current_version=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
+        
+        # Get all deployments sorted by creation timestamp
+        DEPLOYMENTS=$(kubectl get deployments -n prometheus -l app=sinatra --sort-by=.metadata.creationTimestamp -o name | cut -d/ -f2)
+        echo "deployments=${DEPLOYMENTS}" >> $GITHUB_OUTPUT
+        
+        # Find the previous deployment (not current)
+        PREVIOUS_DEPLOYMENT=""
+        for DEPLOYMENT in $DEPLOYMENTS; do
+          DEPLOYMENT_VERSION=$(kubectl get deployment $DEPLOYMENT -n prometheus -o jsonpath='{.metadata.labels.version}')
+          if [ "$DEPLOYMENT_VERSION" != "$CURRENT_VERSION" ]; then
+            PREVIOUS_DEPLOYMENT=$DEPLOYMENT
+            PREVIOUS_VERSION=$DEPLOYMENT_VERSION
+            break
           fi
-      
-      - name: Perform rollback
-        id: rollback
-        run: |
-          echo "::group::Rollback Process"
-          ROLLBACK_STATUS="no_previous"
+        done
+        
+        echo "previous_deployment=${PREVIOUS_DEPLOYMENT}" >> $GITHUB_OUTPUT
+        echo "previous_version=${PREVIOUS_VERSION}" >> $GITHUB_OUTPUT
+        
+        if [ -n "$PREVIOUS_DEPLOYMENT" ]; then
+          echo "has_previous_deployment=true" >> $GITHUB_OUTPUT
+        else
+          echo "has_previous_deployment=false" >> $GITHUB_OUTPUT
+        fi
+    
+    - name: Perform rollback
+      id: rollback
+      run: |
+        echo "::group::Rollback Process"
+        
+        if [ "${{ steps.check_deployments.outputs.has_previous_deployment }}" = "true" ]; then
+          echo "Rolling back to previous version: ${{ steps.check_deployments.outputs.previous_version }}"
           
-          # Clean up failed deployment if exists
-          if [ "${{ steps.check_deployments.outputs.deployment_count }}" -gt 0 ]; then
-            echo "Removing failed deployment: ${{ steps.check_deployments.outputs.new_deployment_name }}"
-            kubectl delete deployment ${{ steps.check_deployments.outputs.new_deployment_name }} -n prometheus --ignore-not-found=true
-            
-            # Attempt rollback if previous version exists
-            if [ "${{ steps.check_deployments.outputs.has_previous_deployment }}" == "true" ]; then
-              echo "Rolling back to version: ${{ steps.check_deployments.outputs.previous_active }}"
-              kubectl patch svc sinatra-service -n prometheus \
-                -p "{\"spec\": {\"selector\": {\"version\": \"${{ steps.check_deployments.outputs.previous_active }}\"}}}"
-              
-              echo "Verifying service selector:"
-              kubectl get svc sinatra-service -n prometheus -o jsonpath='{.spec.selector}' | jq
-              ROLLBACK_STATUS="success"
-            fi
-          else
-            echo "No deployments found to roll back from"
-          fi
+          # Patch service to point to previous version
+          kubectl patch svc sinatra-service -n prometheus \
+            -p "{\"spec\": {\"selector\": {\"version\": \"${{ steps.check_deployments.outputs.previous_version }}\"}}}"
           
-          echo "rollback_status=${ROLLBACK_STATUS}" >> $GITHUB_OUTPUT
-          echo "::endgroup::"
-      
-      - name: Verify rollback
-        if: steps.rollback.outputs.rollback_status == 'success'
-        run: |
-          echo "::group::Rollback Verification"
-          echo "Starting port-forward for verification..."
+          echo "Service updated. Current selector:"
+          kubectl get svc sinatra-service -n prometheus -o jsonpath='{.spec.selector}' | jq
           
-          # Start port-forward in background
-          kubectl port-forward svc/sinatra-service 8080:80 -n prometheus > /dev/null 2>&1 &
-          PORT_FORWARD_PID=$!
-          sleep 5
-          
-          # Check health endpoint
-          MAX_RETRIES=3
-          RETRY_DELAY=2
-          STATUS_CODE=000
-          
-          for i in $(seq 1 $MAX_RETRIES); do
-            STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health)
-            [ "$STATUS_CODE" -eq 200 ] && break
-            sleep $RETRY_DELAY
-          done
-          
-          kill $PORT_FORWARD_PID || true
-          
-          if [ "$STATUS_CODE" -ne 200 ]; then
-            echo "::error::Health check failed (Status: $STATUS_CODE)"
-            exit 1
+          # Scale down current deployment if it exists
+          if [ -n "${{ steps.check_deployments.outputs.current_version }}" ]; then
+            CURRENT_DEPLOYMENT="sinatra-${{ steps.check_deployments.outputs.current_version }}"
+            echo "Scaling down current deployment: $CURRENT_DEPLOYMENT"
+            kubectl scale deployment $CURRENT_DEPLOYMENT -n prometheus --replicas=0
           fi
           
+          # Scale up previous deployment
+          echo "Scaling up previous deployment: ${{ steps.check_deployments.outputs.previous_deployment }}"
+          kubectl scale deployment ${{ steps.check_deployments.outputs.previous_deployment }} -n prometheus --replicas=2
+          
+          echo "rollback_status=success" >> $GITHUB_OUTPUT
+        else
+          echo "::error::No previous deployment available for rollback"
+          echo "rollback_status=no_previous" >> $GITHUB_OUTPUT
+        fi
+        echo "::endgroup::"
+    
+    - name: Verify rollback
+      if: steps.rollback.outputs.rollback_status == 'success'
+      run: |
+        echo "::group::Rollback Verification"
+        
+        # Wait for rollout to complete
+        kubectl rollout status deployment/${{ steps.check_deployments.outputs.previous_deployment }} -n prometheus --timeout=120s
+        
+        # Verify service endpoints
+        echo "Current endpoints:"
+        kubectl get endpoints sinatra-service -n prometheus -o wide
+        
+        # Port-forward for verification
+        echo "Starting port-forward for verification..."
+        kubectl port-forward svc/sinatra-service 8080:80 -n prometheus > /dev/null 2>&1 &
+        PORT_FORWARD_PID=$!
+        sleep 5
+        
+        # Check health endpoint
+        STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health)
+        kill $PORT_FORWARD_PID || true
+        
+        if [ "$STATUS_CODE" -eq 200 ]; then
           echo "Rollback verification successful"
-          echo "::endgroup::"
-      
-      - name: Handle rollback failure
-        if: steps.rollback.outputs.rollback_status != 'success'
-        run: |
-          echo "::group::Rollback Status"
-          case "${{ steps.rollback.outputs.rollback_status }}" in
-            "no_previous")
-              echo "::error::No previous deployment available for rollback"
-              ;;
-            *)
-              echo "::error::Rollback failed unexpectedly"
-              ;;
-          esac
-          echo "::endgroup::"
-          
-          if [ "${{ inputs.critical-failure }}" == "true" ]; then
-            exit 1
-          fi
+        else
+          echo "::error::Health check failed (Status: $STATUS_CODE)"
+          exit 1
+        fi
+        echo "::endgroup::"
+    
+    - name: Handle rollback failure
+      if: steps.rollback.outputs.rollback_status != 'success'
+      run: |
+        echo "::group::Rollback Status"
+        echo "::error::Rollback failed - no previous deployment available"
+        echo "Current deployments:"
+        kubectl get deployments -n prometheus -l app=sinatra
+        echo "::endgroup::"
