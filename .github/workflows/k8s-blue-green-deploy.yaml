@@ -1313,124 +1313,74 @@ jobs:
     needs: [minikube]
     runs-on: ubuntu-latest
     steps:
-      - name: Start Minikube
-        uses: hiberbee/github-action-minikube@latest
-      
-      - name: Ensure prometheus namespace exists
-        run: |
-          kubectl create namespace prometheus --dry-run=client -o yaml | kubectl apply -f -
-          echo "Namespace prometheus created/verified"
-      
-      - name: Debug - Show all cluster resources
-        run: |
-          echo "::group::Cluster State Before Rollback"
-          echo "### Nodes:"
-          kubectl get nodes -o wide
-          echo "### All Namespaces:"
-          kubectl get ns
-          echo "### All Resources in prometheus namespace:"
-          kubectl get all -n prometheus || echo "No resources found in prometheus namespace"
-          echo "::endgroup::"
-      
-      - name: Check for existing deployments
-        id: check_deployments
-        run: |
-          echo "::group::Current Deployment State"
-          # Check if sinatra-service exists
-          if kubectl get svc sinatra-service -n prometheus >/dev/null 2>&1; then
-            echo "sinatra-service exists"
-            CURRENT_VERSION=$(kubectl get svc sinatra-service -n prometheus -o jsonpath='{.spec.selector.version}' 2>/dev/null || echo "none")
-            echo "Current service version: $CURRENT_VERSION"
-          else
-            echo "sinatra-service does not exist"
-            CURRENT_VERSION="none"
-          fi
+    - name: Start Minikube
+      uses: hiberbee/github-action-minikube@latest
+    
+    - name: Debug - Full cluster state
+      run: |
+        echo "::group::Cluster Diagnostics"
+        echo "### Kubernetes Version:"
+        kubectl version
+        echo "### Cluster Events:"
+        kubectl get events -A --sort-by=.metadata.creationTimestamp
+        echo "### Pods in all namespaces:"
+        kubectl get pods -A
+        echo "::endgroup::"
+    
+    - name: Check for existing deployments
+      id: check_deployments
+      run: |
+        echo "::group::Deployment State Check"
+        # Check if any sinatra resources exist anywhere
+        echo "### Any sinatra deployments in cluster:"
+        kubectl get deployments -A -l app=sinatra || echo "None found"
+        
+        # Check if service exists
+        if kubectl get svc sinatra-service -n prometheus >/dev/null 2>&1; then
+          echo "sinatra-service exists"
+          CURRENT_VERSION=$(kubectl get svc sinatra-service -n prometheus -o jsonpath='{.spec.selector.version}')
           echo "current_version=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
+        else
+          echo "sinatra-service does not exist"
+          echo "current_version=none" >> $GITHUB_OUTPUT
+        fi
+        echo "::endgroup::"
+    
+    - name: Perform recovery actions
+      run: |
+        echo "::group::Recovery Actions"
+        echo "Attempting to restore service..."
+        
+        # Try to find any running sinatra pods
+        RUNNING_POD=$(kubectl get pods -n prometheus -l app=sinatra --field-selector=status.phase=Running -o name | head -n1)
+        
+        if [ -n "$RUNNING_POD" ]; then
+          echo "Found running pod: $RUNNING_POD"
+          POD_VERSION=$(kubectl get $RUNNING_POD -n prometheus -o jsonpath='{.metadata.labels.version}')
           
-          # Get all deployments
-          DEPLOYMENTS=$(kubectl get deployments -n prometheus -l app=sinatra --sort-by=.metadata.creationTimestamp -o name 2>/dev/null | cut -d/ -f2 || echo "")
-          echo "All deployments: ${DEPLOYMENTS:-none}"
-          echo "deployments=${DEPLOYMENTS}" >> $GITHUB_OUTPUT
+          echo "Recreating service pointing to version $POD_VERSION"
+          kubectl apply -f - <<EOF
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: sinatra-service
+            namespace: prometheus
+          spec:
+            selector:
+              app: sinatra
+              version: $POD_VERSION
+            ports:
+              - protocol: TCP
+                port: 80
+                targetPort: 8000
+          EOF
           
-          # Find previous deployment (not current)
-          PREVIOUS_DEPLOYMENT=""
-          PREVIOUS_VERSION=""
-          for DEPLOYMENT in $DEPLOYMENTS; do
-            DEPLOYMENT_VERSION=$(kubectl get deployment $DEPLOYMENT -n prometheus -o jsonpath='{.metadata.labels.version}')
-            if [ "$DEPLOYMENT_VERSION" != "$CURRENT_VERSION" ]; then
-              PREVIOUS_DEPLOYMENT=$DEPLOYMENT
-              PREVIOUS_VERSION=$DEPLOYMENT_VERSION
-              break
-            fi
-          done
-          
-          echo "Previous deployment: ${PREVIOUS_DEPLOYMENT:-none}"
-          echo "Previous version: ${PREVIOUS_VERSION:-none}"
-          echo "previous_deployment=${PREVIOUS_DEPLOYMENT}" >> $GITHUB_OUTPUT
-          echo "previous_version=${PREVIOUS_VERSION}" >> $GITHUB_OUTPUT
-          
-          if [ -n "$PREVIOUS_DEPLOYMENT" ]; then
-            echo "has_previous_deployment=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_previous_deployment=false" >> $GITHUB_OUTPUT
-          fi
-          echo "::endgroup::"
-      
-      - name: Perform rollback or cleanup
-        id: rollback
-        run: |
-          echo "::group::Rollback Actions"
-          if [ "${{ steps.check_deployments.outputs.has_previous_deployment }}" = "true" ]; then
-            echo "Performing rollback to ${{ steps.check_deployments.outputs.previous_deployment }}"
-            
-            # Patch service
-            kubectl patch svc sinatra-service -n prometheus \
-              -p "{\"spec\": {\"selector\": {\"version\": \"${{ steps.check_deployments.outputs.previous_version }}\"}}}"
-            
-            # Scale deployments
-            if [ "${{ steps.check_deployments.outputs.current_version }}" != "none" ]; then
-              echo "Scaling down current deployment"
-              kubectl scale deployment sinatra-${{ steps.check_deployments.outputs.current_version }} -n prometheus --replicas=0
-            fi
-            
-            echo "Scaling up previous deployment"
-            kubectl scale deployment ${{ steps.check_deployments.outputs.previous_deployment }} -n prometheus --replicas=2
-            
-            echo "rollback_status=success" >> $GITHUB_OUTPUT
-          else
-            echo "::warning::No previous deployment available for rollback"
-            
-            # Clean up any failed resources if they exist
-            echo "Cleaning up any failed resources..."
-            kubectl delete deployment -n prometheus -l app=sinatra --ignore-not-found
-            kubectl delete svc sinatra-service -n prometheus --ignore-not-found
-            
-            echo "rollback_status=cleaned" >> $GITHUB_OUTPUT
-          fi
-          echo "::endgroup::"
-      
-      - name: Show final state
-        run: |
-          echo "::group::Final Cluster State"
-          echo "### Deployments:"
-          kubectl get deployments -n prometheus -o wide || true
-          echo "### Services:"
-          kubectl get svc -n prometheus -o wide || true
-          echo "### Pods:"
-          kubectl get pods -n prometheus -o wide || true
-          echo "::endgroup::"
-      
-      - name: Handle rollback result
-        run: |
-          case "${{ steps.rollback.outputs.rollback_status }}" in
-            "success")
-              echo "::notice::Rollback completed successfully"
-              ;;
-            "cleaned")
-              echo "::notice::No rollback available - cleaned up resources"
-              ;;
-            *)
-              echo "::error::Rollback failed"
-              exit 1
-              ;;
-          esac
+          echo "Service restored to version $POD_VERSION"
+          exit 0
+        else
+          echo "::error::No running sinatra pods found - cannot recover"
+          echo "Last deployment logs:"
+          kubectl logs -n prometheus -l app=sinatra --tail=50 || echo "No logs available"
+          exit 1
+        fi
+        echo "::endgroup::"
