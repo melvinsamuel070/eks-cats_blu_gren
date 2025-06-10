@@ -90,7 +90,7 @@ module Cats
     end
 
     # Health endpoint for Kubernetes
-    # get '/health' do
+    get '/health' do
       status 200
       'OK'
     end
