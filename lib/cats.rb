@@ -90,9 +90,9 @@ module Cats
     end
 
     # Health endpoint for Kubernetes
-    get '/health' do
+    # get '/health' do
       status 200
-      # 'OK'
+      'OK'
     end
 
     # Version endpoint that responds to both JSON and plain text
