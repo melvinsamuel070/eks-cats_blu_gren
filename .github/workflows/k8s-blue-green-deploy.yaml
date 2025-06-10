@@ -1244,22 +1244,36 @@ jobs:
     steps:
       - name: Start Minikube
         uses: hiberbee/github-action-minikube@latest
-      
       - name: Check for existing deployments
         id: check_deployments
         run: |
           echo "::group::Current Deployment State"
           kubectl get deployments -n prometheus --show-labels
           echo "::endgroup::"
-          
-          # Check if the new deployment exists and is failing
-          NEW_DEPLOYMENT=$(kubectl get deployments -n prometheus -l app=sinatra --sort-by='{.metadata.creationTimestamp}' -o jsonpath='{.items[-1:].metadata.labels.version}')
-          echo "new_deployment=$NEW_DEPLOYMENT" >> $GITHUB_OUTPUT
-          
-          # Check if the previous active deployment still exists
-          PREVIOUS_ACTIVE=$(kubectl get deployments -n prometheus -l app=sinatra --sort-by='{.metadata.creationTimestamp}' -o jsonpath='{.items[-2:].metadata.labels.version}')
-          echo "previous_active=$PREVIOUS_ACTIVE" >> $GITHUB_OUTPUT
-
+    
+              # Get all deployments sorted by creation timestamp
+          DEPLOYMENTS_JSON=$(kubectl get deployments -n prometheus -l app=sinatra --sort-by='{.metadata.creationTimestamp}' -o json)
+     
+          # Count deployments
+          DEPLOYMENT_COUNT=$(echo "$DEPLOYMENTS_JSON" | jq '.items | length')
+    
+          # Initialize variables
+          NEW_DEPLOYMENT=""
+          PREVIOUS_ACTIVE=""
+    
+          # Get new deployment (most recent)
+          if [ "$DEPLOYMENT_COUNT" -gt 0 ]; then
+          NEW_DEPLOYMENT=$(echo "$DEPLOYMENTS_JSON" | jq -r '.items[-1].metadata.labels.version')
+          fi
+    
+          # Get previous active deployment (second most recent)
+          if [ "$DEPLOYMENT_COUNT" -gt 1 ]; then
+          PREVIOUS_ACTIVE=$(echo "$DEPLOYMENTS_JSON" | jq -r '.items[-2].metadata.labels.version')
+          fi
+    
+          # Output results
+          echo "new_deployment=${NEW_DEPLOYMENT}" >> $GITHUB_OUTPUT
+          echo "previous_active=${PREVIOUS_ACTIVE}" >> $GITHUB_OUTPUT
       - name: Perform rollback
         run: |
           # First, check if we have a new failed deployment to clean up
